@@ -66,3 +66,10 @@ to be fixed
 6. how to save the project for carry
 7. need to add separate csv for training user input chat dataset
 8. is it possible for the user to get symptoms from disease and disease from symptoms in the disease and symptoms file(Done)
+
+to be added (05/13/2026)
+1. improve the chat functions
+2. include a way to store data
+3. way to identity a person
+4 include phone to give data on location and sunlight
+5. doctor/ departments recomendation base on serivity
