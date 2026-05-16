@@ -69,7 +69,11 @@ to be fixed
 
 to be added (05/13/2026)
 1. improve the chat functions
-2. include a way to store data
-3. way to identity a person
+2. include a way to store data (done)
+3. way to identity a person (done) Need to make a way that user cannot get other info (05/14/2026)
 4 include phone to give data on location and sunlight
 5. doctor/ departments recomendation base on serivity
+added (05/15/2026)
+1. train_MedicalCRNN, dataset from https://data.mendeley.com/datasets/dsb5r6vskg/3
+2. Detector CNN, dataset from https://guillaumejaume.github.io/FUNSD/
+3. train_traffic_router.py, dataset from https://data.mendeley.com/datasets/dsb5r6vskg/3,https://www.kaggle.com/datasets/itachi9604/disease-symptom-description-dataset,https://www.kaggle.com/datasets/louiscia/transcription-samples-mtsamples
