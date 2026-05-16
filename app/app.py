@@ -46,12 +46,16 @@ DISEASE_ALIASES = {
 }
 
 # ====================================================================
-# 2. CLOUD DATABASE & IDENTITY (SECURED VIA INHERITANCE)
+# 2. CLOUD DATABASE & IDENTITY (DIRECT EMBEDDED CONTEXT)
 # ====================================================================
 try:
-    # SECURED: Pulls implicitly from local secrets configurations or
-    # the advanced environment variables panel on the Streamlit web cloud.
-    conn = st.connection("supabase", type=SupabaseConnection)
+    # RESTORED: Hard-coded credentials mapped explicitly via options dictionaries
+    conn = st.connection(
+        "supabase",
+        type=SupabaseConnection,
+        url="https://cwwoloupweulprxwibmp.supabase.co",
+        key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3d29sb3Vwd2V1bHByeHdpYm1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3MDA5NDEsImV4cCI6MjA5NDI3Njk0MX0.ggPfeYBaL7PLiEM8_fYI5fHo48obb5yRum_kR1CORNM"
+    )
 except Exception as e:
     st.error(f"⚠️ Database Connection Failed: {e}")
     st.stop()
@@ -77,8 +81,7 @@ def save_user_cloud(v_id, email, key):
         }).execute()
         return True
     except Exception as db_error:
-        # Graceful logging in case table schemas mismatch on runtime
-        st.sidebar.error(f"Write Transaction Rejected: {db_error}")
+        st.sidebar.error(f"Database Error: {db_error}")
         return False
 
 
@@ -115,7 +118,7 @@ class MedicalAI:
             except Exception as e:
                 st.error(f"Resource Load Error: {e}")
         else:
-            st.error("⚠️ Model architectural weights not found. Run validation/training routines.")
+            st.error("⚠️ Model files not found. Run training scripts.")
 
     def log_learning_request(self, disease_name):
         if not os.path.exists(REQUESTS_FILE):
@@ -128,13 +131,13 @@ class MedicalAI:
 
     def execute_verification_cycle(self):
         try:
-            st.info("🧠 Recalculating predictive decision boundaries...")
+            st.info("🧠 Retraining Neural Network weights...")
             subprocess.run([sys.executable, PREPROCESS_SCRIPT], check=True)
             subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
             self.load_resources()
-            return True, "✅ Update Complete! System learned the requested vectors."
+            return True, "✅ Update Complete! I have learned the new diseases."
         except Exception as e:
-            return False, f"Retraining lifecycle aborted: {e}"
+            return False, f"Retraining failed: {e}"
 
     def predict(self, user_input):
         cleaned = re.sub(r'\b(and|or|I have|feeling|my|is)\b', '', user_input, flags=re.IGNORECASE)
