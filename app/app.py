@@ -5,19 +5,17 @@ import pandas as pd
 import joblib
 import re
 import difflib
-import requests
 import csv
 import subprocess
 import hashlib
 import random
 import uuid
 from datetime import datetime
-from bs4 import BeautifulSoup
 from st_supabase_connection import SupabaseConnection
 
-# =======================
-# 1. CONFIGURATION (PORTABLE PATHS)
-# =======================
+# ====================================================================
+# 1. CONFIGURATION (PORTABLE CLOUD PATHS)
+# ====================================================================
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_SCRIPT_DIR)
 
@@ -35,8 +33,8 @@ REQUESTS_FILE = os.path.join(TEMP_DIR, "unverified_diseases.csv")
 LEARNED_DATA_FILE = os.path.join(RAW_DIR, "learned_user_data.csv")
 
 # Scripts for Retraining
-PREPROCESS_SCRIPT = os.path.join(CURRENT_SCRIPT_DIR, "chat_bot_preprocessing.py")
-TRAIN_SCRIPT = os.path.join(CURRENT_SCRIPT_DIR, "train_lgbm.py")
+PREPROCESS_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "chat_bot_preprocessing.py")
+TRAIN_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "train_lgbm.py")
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
@@ -47,17 +45,13 @@ DISEASE_ALIASES = {
     "heart attack": "myocardial infarction", "brain stroke": "cerebrovascular accident"
 }
 
-# =======================
-# 2. CLOUD DATABASE & IDENTITY
-# =======================
+# ====================================================================
+# 2. CLOUD DATABASE & IDENTITY (SECURED VIA INHERITANCE)
+# ====================================================================
 try:
-    # HARD-CODED CONNECTION FOR INSTANT ACCESS
-    conn = st.connection(
-        "supabase",
-        type=SupabaseConnection,
-        url="https://cwwoloupweulprxwibmp.supabase.co",
-        key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3d29sb3Vwd2V1bHByeHdpYm1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg3MDA5NDEsImV4cCI6MjA5NDI3Njk0MX0.ggPfeYBaL7PLiEM8_fYI5fHo48obb5yRum_kR1CORNM"
-    )
+    # SECURED: Pulls implicitly from local secrets configurations or
+    # the advanced environment variables panel on the Streamlit web cloud.
+    conn = st.connection("supabase", type=SupabaseConnection)
 except Exception as e:
     st.error(f"⚠️ Database Connection Failed: {e}")
     st.stop()
@@ -82,7 +76,9 @@ def save_user_cloud(v_id, email, key):
             "visitor_id": v_id, "email": email, "permanent_key": str(key)
         }).execute()
         return True
-    except:
+    except Exception as db_error:
+        # Graceful logging in case table schemas mismatch on runtime
+        st.sidebar.error(f"Write Transaction Rejected: {db_error}")
         return False
 
 
@@ -95,15 +91,15 @@ def verify_user_cloud(v_id, input_key):
         return False
 
 
-# =======================
+# ====================================================================
 # 3. BACKEND LOGIC CLASS
-# =======================
+# ====================================================================
 class MedicalAI:
     def __init__(self):
-        self.model = None;
-        self.le = None;
-        self.known_symptoms = [];
-        self.known_diseases = [];
+        self.model = None
+        self.le = None
+        self.known_symptoms = []
+        self.known_diseases = []
         self.df_full = None
         self.load_resources()
 
@@ -114,11 +110,12 @@ class MedicalAI:
                 self.le = joblib.load(LE_PATH)
                 self.known_symptoms = pd.read_csv(FEAT_PATH, nrows=0).columns.tolist()
                 self.known_diseases = [d.lower() for d in self.le.classes_]
-                if os.path.exists(FULL_DATA_PATH): self.df_full = pd.read_csv(FULL_DATA_PATH)
+                if os.path.exists(FULL_DATA_PATH):
+                    self.df_full = pd.read_csv(FULL_DATA_PATH)
             except Exception as e:
                 st.error(f"Resource Load Error: {e}")
         else:
-            st.error("⚠️ Model files not found. Run training scripts.")
+            st.error("⚠️ Model architectural weights not found. Run validation/training routines.")
 
     def log_learning_request(self, disease_name):
         if not os.path.exists(REQUESTS_FILE):
@@ -130,42 +127,49 @@ class MedicalAI:
         return True
 
     def execute_verification_cycle(self):
-        # Trigger external scripts via subprocess
         try:
-            st.info("🧠 Retraining Neural Network weights...")
+            st.info("🧠 Recalculating predictive decision boundaries...")
             subprocess.run([sys.executable, PREPROCESS_SCRIPT], check=True)
             subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
-            self.load_resources()  # Reload model with new knowledge
-            return True, "✅ Update Complete! I have learned the new diseases."
+            self.load_resources()
+            return True, "✅ Update Complete! System learned the requested vectors."
         except Exception as e:
-            return False, f"Retraining failed: {e}"
+            return False, f"Retraining lifecycle aborted: {e}"
 
     def predict(self, user_input):
         cleaned = re.sub(r'\b(and|or|I have|feeling|my|is)\b', '', user_input, flags=re.IGNORECASE)
         tokens = [s.strip().replace(" ", "_").lower() for s in cleaned.split(",")]
-        input_dict = {col: 0 for col in self.known_symptoms};
+        input_dict = {col: 0 for col in self.known_symptoms}
         matched = []
         for t in tokens:
             m = difflib.get_close_matches(t, self.known_symptoms, n=1, cutoff=0.7)
             if m:
-                input_dict[m[0]] = 1; matched.append(m[0])
+                input_dict[m[0]] = 1
+                matched.append(m[0])
             else:
                 for k in self.known_symptoms:
-                    if t in k.replace("_", " "): input_dict[k] = 1; matched.append(k); break
-        if not matched: return None, [], 0
+                    if t in k.replace("_", " "):
+                        input_dict[k] = 1
+                        matched.append(k)
+                        break
+        if not matched:
+            return None, [], 0
+
         pred_id = self.model.predict(pd.DataFrame([input_dict]))[0]
         conf = self.model.predict_proba(pd.DataFrame([input_dict]))[0][pred_id] * 100
         return self.le.inverse_transform([pred_id])[0], list(set(matched)), conf
 
 
-# =======================
+# ====================================================================
 # 4. MAIN APP INTERFACE
-# =======================
+# ====================================================================
 def main():
     st.set_page_config(page_title="Medical AI Chat", page_icon="🛡️", layout="centered")
 
-    if 'bot' not in st.session_state: st.session_state.bot = MedicalAI()
-    if 'auth' not in st.session_state: st.session_state.auth = False
+    if 'bot' not in st.session_state:
+        st.session_state.bot = MedicalAI()
+    if 'auth' not in st.session_state:
+        st.session_state.auth = False
 
     v_id = get_visitor_id()
 
@@ -181,7 +185,7 @@ def main():
                 pin = st.text_input("Enter 6-Digit Key", type="password")
                 if st.button("Unlock Features"):
                     if verify_user_cloud(v_id, pin):
-                        st.session_state.auth = True;
+                        st.session_state.auth = True
                         st.rerun()
                     else:
                         st.error("Invalid Key for this device.")
@@ -190,13 +194,14 @@ def main():
                 if st.button("Generate Key"):
                     if "@" in mail:
                         k = generate_permanent_key(mail)
-                        if save_user_cloud(v_id, mail, k): st.success(f"Permanent Key: **{k}**")
+                        if save_user_cloud(v_id, mail, k):
+                            st.success(f"Permanent Key: **{k}**")
                     else:
                         st.error("Invalid Email.")
         else:
             st.success("✅ Professional Access Active")
             if st.button("Logout"):
-                st.session_state.auth = False;
+                st.session_state.auth = False
                 st.rerun()
             st.divider()
             st.subheader("Clinical Data Upload")
@@ -212,7 +217,8 @@ def main():
             {"role": "assistant", "content": "Hello! I can identify health risks. How are you feeling?"}]
 
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]): st.markdown(msg["content"])
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
     if prompt := st.chat_input("Enter symptoms (e.g. fever, headache)..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
