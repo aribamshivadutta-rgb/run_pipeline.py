@@ -11,12 +11,18 @@ import hashlib
 import random
 import uuid
 import torch
-import torch.nn as nn  # <-- Added explicitly for native layer definitions
+import torch.nn as nn
 import cv2
 import numpy as np
 from datetime import datetime
 from st_supabase_connection import SupabaseConnection
 from pdf2image import convert_from_bytes
+
+# 🤫 SILENT LOG FILTER ROOM: Prevent background system warning loops from spamming the console
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Avoid relative import breakages by dynamically adding scripts path to system environment
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,7 +54,7 @@ LEARNED_DATA_FILE = os.path.join(RAW_DIR, "learned_user_data.csv")
 
 # Computer Vision Network Weights
 DETECTOR_WEIGHTS = os.path.join(MODEL_DIR, "medical_detector.pth")
-CRNN_WEIGHTS = os.path.join(MODEL_DIR, "MedicalCRNN_v1.pth")  # <-- Native Weights Mapping
+CRNN_WEIGHTS = os.path.join(MODEL_DIR, "MedicalCRNN_v1.pth")
 TRAFFIC_ROUTER_WEIGHTS = os.path.join(MODEL_DIR, "MedicalTrafficRouter_v1.pkl")
 TRAFFIC_VECTORIZER_WEIGHTS = os.path.join(MODEL_DIR, "MedicalTrafficRouter_v1_vectorizer.pkl")
 
@@ -114,7 +120,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CRNN ALIGNED)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CRNN FIX ALIGNED)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -146,13 +152,20 @@ class MedicalCRNN(nn.Module):
         self.rnn = nn.LSTM(2048, 256, bidirectional=True, num_layers=2, batch_first=True)
         self.fc = nn.Linear(512, vocab_size)
 
-    def forward(self, x):
-        x = self.cnn(x)
-        b, c, h, w = x.size()
-        x = x.view(b, w, c * h)
-        x, _ = self.rnn(x)
-        x = x.fc(x)
-        return x.log_softmax(2)
+    def forward(self, img_tensor):
+        # 1. Extract features from CNN architecture
+        features = self.cnn(img_tensor)
+
+        # 2. Reshape features accurately [Batch, Width, Channels * Height]
+        b, c, h, w = features.size()
+        features = features.view(b, w, c * h)
+
+        # 3. Process time-step sequence via Bidirectional LSTM layers
+        rnn_out, _ = self.rnn(features)
+
+        # 4. Map sequence out to character spaces
+        logits = self.fc(rnn_out)
+        return logits.log_softmax(2)
 
 
 class OCRReaderPipeline:
@@ -407,7 +420,7 @@ def main():
                         st.text_area("Extracted Context Matrix", results["ocr_text"])
 
                     with tab_mask:
-                        # 🌟 FIX: Updated use_column_width from boolean to standard string "always"
+                        # 🌟 FIXED: Updated use_column_width from boolean to standard string "always" to quiet layout warnings
                         st.image(results["mask_preview"], caption="U-Net Segmented Mask", use_column_width="always")
 
                 except Exception as eval_err:
