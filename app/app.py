@@ -114,7 +114,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CONTOUR RE-ENGINEERED)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CONTOUR ADVANCED)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -220,34 +220,40 @@ class OCRReaderPipeline:
                 mask_output = self.detector(img_tensor)
                 mask = (mask_output.squeeze().cpu().numpy() > 0.5).astype(np.uint8) * 255
 
-        # STEP 2: Advanced Row Slicing & Character Recognition Sequence
+        # STEP 2: Advanced Row Slicing & Character Recognition Sequence (OpenCV Vector Alignment Fixed)
         final_text_lines = []
 
         if self.text_recognizer is not None:
-            # Resize mask back to original image proportions to find exact text row contours
-            resized_mask = cv2.resize(mask, (w, h))
+            # 🛡️ Cast mask array explicitly to standard uint8 elements
+            resized_mask = cv2.resize(mask, (w, h)).astype(np.uint8)
 
-            # Find coordinates of all text lines detected by the U-Net mask
+            # Extract coordinates for segmented text paths
             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            # Sort contours from top to bottom so it reads the prescription in order
-            contours = sorted(contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
-
-            if len(contours) == 0:
-                # Fallback to full-page crop if no lines were segmented
-                contours = [[[0, 0], [0, h], [w, h], [w, 0]]]
-
+            # Structurally filter to guarantee standard NumPy validation arrays are processed
+            valid_contours = []
             for ctr in contours:
+                if isinstance(ctr, np.ndarray) and len(ctr) > 0:
+                    valid_contours.append(ctr)
+
+            # Sort valid contours from top to bottom layout sequence
+            if len(valid_contours) > 0:
+                valid_contours = sorted(valid_contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
+            else:
+                # Fallback layout bounding matrix if segments trace empty
+                valid_contours = [np.array([[[0, 0]], [[0, h]], [[w, h]], [[w, 0]]], dtype=np.int32)]
+
+            for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
 
-                # Filter out tiny pixel noise blocks or random dots
+                # Filter out microscopic noise blocks or random artifacts
                 if cw < 20 or ch < 10:
                     continue
 
-                # Crop out the individual horizontal text row strip
+                # Crop out precise single horizontal text block row
                 line_crop = img_for_crnn[y:y + ch, x:x + cw]
 
-                # Format the single line crop cleanly for the CRNN LSTM input matrix
+                # Format current row slice cleanly for the CRNN deep learning input
                 crnn_input = cv2.resize(line_crop, (256, 64))
                 crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
                 crnn_input = (crnn_input - 0.5) / 0.5
