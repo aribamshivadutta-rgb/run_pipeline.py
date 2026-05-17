@@ -304,18 +304,18 @@ class OCRReaderPipeline:
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
 
-                # 🛠️ CALIBRATION TOGGLE 1 (COLOR-SPACE INVERSION):
-                # Uncomment the line below if your CRNN model weights expect dark text on light backgrounds
-                # resized_crop = cv2.bitwise_not(resized_crop)
+                # 🛠️ CALIBRATION UNLOCKED 1 (COLOR-SPACE INVERSION):
+                # Enabled to natively transform white-on-black mask contours back to dark text on a light backdrop
+                resized_crop = cv2.bitwise_not(resized_crop)
 
                 crnn_input[0:nh, 0:nw] = resized_crop
 
                 # Cast matrix arrays safely over to float representations
                 crnn_input = crnn_input.astype(np.float32) / 255.0
 
-                # 🛠️ CALIBRATION TOGGLE 2 (ZERO-CENTERED NORMALIZATION DISTRIBUTION):
-                # Uncomment the line below if your weights were trained using a [-1.0, 1.0] range scale
-                # crnn_input = (crnn_input - 0.5) / 0.5
+                # 🛠️ CALIBRATION UNLOCKED 2 (ZERO-CENTERED NORMALIZATION DISTRIBUTION):
+                # Enabled to push pixel distributions into the [-1.0, 1.0] range expected by ResNet backbones
+                crnn_input = (crnn_input - 0.5) / 0.5
 
                 # Convert matrix cleanly to 4D Torch Tensor: [Batch, Channel, Height, Width]
                 crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
