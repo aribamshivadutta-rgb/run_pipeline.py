@@ -154,17 +154,22 @@ class MedicalCRNN(nn.Module):
             nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(),
             nn.Conv2d(256, 256, 3, padding=1), nn.ReLU(), nn.MaxPool2d((2, 1))
         )
-        self.rnn = nn.LSTM(2048, 256, bidirectional=True, num_layers=2, batch_first=True)
-        self.fc = nn.Linear(512, vocab_size)
+        self.hidden_size = 256
+        self.num_layers = 2
+        # Aligned to exact shape layout structure expected by fresh weights [1024, 2048]
+        self.rnn = nn.LSTM(input_size=2048, hidden_size=self.hidden_size, num_layers=self.num_layers,
+                           bidirectional=True, batch_first=True)
+        self.fc = nn.Linear(self.hidden_size * 2, vocab_size)
 
-    def forward(self, img_tensor):
+    def forward(self, img_tensor, hx=None):
         features = self.cnn(img_tensor)
         b, c, h, w = features.size()
 
         features = features.view(b, c * h, w)
         features = features.permute(0, 2, 1)
 
-        rnn_out, _ = self.rnn(features)
+        # Explicit state passing handles zeroed cell frameworks securely
+        rnn_out, _ = self.rnn(features, hx)
         logits = self.fc(rnn_out)
         return logits.log_softmax(2)
 
@@ -189,20 +194,19 @@ class OCRReaderPipeline:
         self.text_recognizer = MedicalCRNN(self.encoder.vocab_size).to(self.device)
 
         if os.path.exists(CRNN_WEIGHTS):
-            # 🎯 FIXED: Execute adaptive key validation logic to catch and strip out mismatched state dict structures
             raw_state_dict = torch.load(CRNN_WEIGHTS, map_location=self.device)
             sanitized_state_dict = {}
 
             for k, v in raw_state_dict.items():
-                # Automatically strip out 'module.' wrapper keys from distributed data parallel training files
                 clean_key = k.replace("module.", "") if k.startswith("module.") else k
                 sanitized_state_dict[clean_key] = v
 
             try:
-                # Forcefully apply state dictionary parameters using non-strict binding fallback layer
-                self.text_recognizer.load_state_dict(sanitized_state_dict, strict=False)
+                # Synchronized structural parameters enable strict graph verification
+                self.text_recognizer.load_state_dict(sanitized_state_dict, strict=True)
             except Exception as load_err:
-                print(f"[MODEL RESILIENCE WARNING]: Intercepted soft mismatched structural layer: {load_err}")
+                print(f"[MODEL RESILIENCE FALLBACK]: Reverting strict layer binding pass: {load_err}")
+                self.text_recognizer.load_state_dict(sanitized_state_dict, strict=False)
 
         self.text_recognizer.eval()
         for module in self.text_recognizer.modules():
@@ -213,7 +217,7 @@ class OCRReaderPipeline:
             self.router = joblib.load(TRAFFIC_ROUTER_WEIGHTS)
             self.vectorizer = joblib.load(TRAFFIC_VECTORIZER_WEIGHTS)
 
-    def process_image(self, image_input, true_label=None, preset_mode="Inverted Light Background"):
+    def process_image(self, image_input, true_label=None, preset_mode="High-Contrast Document (Zero-Centered)"):
         raw_img = None
 
         if isinstance(image_input, str):
@@ -277,7 +281,7 @@ class OCRReaderPipeline:
                 if np.sum(mask > 0) > 250000:
                     is_macro_solid_canvas = True
             else:
-                mask_status_log = "🔴 U-Net Mask Empty -> Swapped to Adaptive Morphology Processing Engine"
+                mask_status_log = f"🔴 U-Net Mask Empty -> Swapped to Adaptive Morphology Processing Engine"
 
                 if np.mean(raw_img) > 127:
                     _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -291,15 +295,18 @@ class OCRReaderPipeline:
             line_bounding_boxes = []
 
             if is_macro_solid_canvas:
-                mask_status_log += " | ⚡ Running Native Coordinate Overlapping Window Slicer"
-                slice_h = int(h * 0.06)
-                stride_step = int(slice_h * 0.70)
+                mask_status_log += " | ⚡ Running Native Proportional Grid Quadrant Slicer"
+                # 🎯 GEOMETRY FIX: High-aspect column slicer stops character resolution squashing
+                slice_h = int(h * 0.08)
+                slice_w = int(w * 0.50)
+                stride_step = int(slice_h * 0.60)
 
                 start_y = int(h * 0.10)
                 end_y = int(h * 0.90)
 
-                for step_y in range(start_y, end_y - slice_h, stride_step):
-                    line_bounding_boxes.append((0, step_y, w, slice_h))
+                for start_x in [0, int(w * 0.50)]:
+                    for step_y in range(start_y, end_y - slice_h, stride_step):
+                        line_bounding_boxes.append((start_x, step_y, slice_w, slice_h))
             else:
                 contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 if len(contours) > 0:
@@ -321,14 +328,15 @@ class OCRReaderPipeline:
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
             # ====================================================================
-            # COLOR POLARITY CONFIGURATION TRACK
+            # POLARITY MATRICES SYNC
             # ====================================================================
             if preset_mode == "Inverted Light Background":
                 EXPECTS_DARK_TEXT = False
                 USE_ZERO_CENTERED_SCALE = False
             elif preset_mode == "High-Contrast Document (Zero-Centered)":
-                EXPECTS_DARK_TEXT = False
-                USE_ZERO_CENTERED_SCALE = True
+                # 🎯 CALIBRATED SYNCHRONIZATION PROFILE (DEFAULT OPTIMAL TARGET)
+                EXPECTS_DARK_TEXT = False  # Keeps background clean light (255)
+                USE_ZERO_CENTERED_SCALE = True  # Compresses floating range values between [-1.0, 1.0]
             elif preset_mode == "Standard PyTorch (Centered)":
                 EXPECTS_DARK_TEXT = True
                 USE_ZERO_CENTERED_SCALE = True
@@ -348,10 +356,23 @@ class OCRReaderPipeline:
                 if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
                     continue
 
+                # Apply binarization profiles dynamically based on ink expectations
+                if EXPECTS_DARK_TEXT:
+                    if np.mean(line_crop) > 127:
+                        _, line_crop = cv2.threshold(line_crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                    else:
+                        _, line_crop = cv2.threshold(line_crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                else:
+                    if np.mean(line_crop) > 127:
+                        _, line_crop = cv2.threshold(line_crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    else:
+                        _, line_crop = cv2.threshold(line_crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
                 target_w, target_h = 256, 64
 
-                bg_color = int(np.median(line_crop)) if line_crop.size > 0 else 255
-                crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_color
+                # Default background canvas padding scales with baseline ink configuration profiles
+                bg_pad_val = 0 if EXPECTS_DARK_TEXT else 255
+                crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_pad_val
 
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
                 nw = max(4, int(line_crop.shape[1] * scale))
@@ -361,10 +382,6 @@ class OCRReaderPipeline:
                 if nh > target_h: nh = target_h
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
-
-                if EXPECTS_DARK_TEXT:
-                    resized_crop = cv2.bitwise_not(resized_crop)
-
                 start_x = max(0, (target_w - nw) // 2)
                 start_y = max(0, (target_h - nh) // 2)
 
@@ -382,27 +399,27 @@ class OCRReaderPipeline:
                 crnn_tensor = crnn_tensor.unsqueeze(0).unsqueeze(0)
 
                 with torch.no_grad():
-                    preds = self.text_recognizer(crnn_tensor)
+                    # 🎯 INIT PASS FIX: Zeroed hidden state parameters protect recurrent cell timelines
+                    num_directions = 2
+                    h0 = torch.zeros(self.text_recognizer.num_layers * num_directions, 1,
+                                     self.text_recognizer.hidden_size).to(self.device)
+                    c0 = torch.zeros(self.text_recognizer.num_layers * num_directions, 1,
+                                     self.text_recognizer.hidden_size).to(self.device)
+
+                    preds = self.text_recognizer(crnn_tensor, (h0, c0))
 
                     raw_shape = list(preds.shape)
                     if raw_shape[0] != 1 and raw_shape[1] == 1:
                         preds = preds.permute(1, 0, 2)
 
                     best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
-                    active_predictions = [idx for idx in best_path if idx != 0]
-
-                    print(f"[CRNN TENSOR TRACE] Calculated Tensor Path Sequence Array Vector: {list(best_path)}")
-                    if len(active_predictions) > 0:
-                        print(f"[CRNN TENSOR TRACE] Detected Character Map Indices: {active_predictions}")
-
                     decoded_line = self.encoder.decode(best_path).strip()
 
                     if len(decoded_line) > 2 and decoded_line.lower() != "nee":
                         final_text_lines.append(decoded_line)
 
             if not final_text_lines:
-                ocr_text_output = "Amoxicillin 500mg Paracetamol"
-                mask_status_log += " | ⚠️ CRNN Saturated Output -> Applied Diagnostic Text Strip"
+                ocr_text_output = "No text extracted from report blocks."
             else:
                 ocr_text_output = " \n ".join(final_text_lines)
         else:
@@ -462,7 +479,7 @@ class MedicalAI:
 
     def execute_verification_cycle(self):
         try:
-            st.info("🧠 Recalculating machine learning weights on cloud architecture...")
+            st.info("🧠 Recalculating machine learning weights on local architecture...")
             if os.path.exists(PREPROCESS_SCRIPT):
                 subprocess.run([sys.executable, PREPROCESS_SCRIPT], check=True)
             if os.path.exists(TRAIN_SCRIPT):
@@ -554,8 +571,8 @@ def main():
             selected_preset = st.selectbox(
                 "CRNN Tensor Matrix Preset",
                 [
-                    "Inverted Light Background",
                     "High-Contrast Document (Zero-Centered)",
+                    "Inverted Light Background",
                     "Standard PyTorch (Centered)",
                     "Raw Intensity Map ([0, 1])"
                 ]
@@ -615,14 +632,15 @@ def main():
 
                         if st.session_state.cached_mask_preview is not None:
                             st.image(st.session_state.cached_mask_preview,
-                                     caption="Target Contour Segmentation Preview Canvas", width="stretch")
+                                     caption="Target Contour Segmentation Preview Canvas", use_container_width=True)
 
                     with tab_debug:
                         st.caption("🔍 Visual Debugger: Real crops entering model neural filters:")
                         crops = st.session_state.get("debug_crops", [])
                         if crops:
                             for idx, crop_frame in enumerate(crops):
-                                st.image(crop_frame, caption=f"Crop Segment Frame Row #{idx + 1}", width="stretch")
+                                st.image(crop_frame, caption=f"Crop Segment Frame Row #{idx + 1}",
+                                         use_container_width=True)
                         else:
                             st.info("No active line chunks cached in memory.")
 
