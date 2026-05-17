@@ -229,7 +229,6 @@ class OCRReaderPipeline:
         ocr_text_output = ""
         if self.text_recognizer is not None:
             crnn_input = cv2.resize(img_for_crnn, (256, 64))
-            # Match torchvision.transforms format ranges directly
             crnn_input = crnn_input.astype(np.float32) / 255.0
             crnn_input = (crnn_input - 0.5) / 0.5
             crnn_tensor = torch.from_numpy(crnn_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
@@ -322,7 +321,7 @@ class MedicalAI:
                 input_dict[m[0]] = 1
                 matched.append(m[0])
             else:
-                for k in self.known_symptoms:
+                for k in self.known_symptoms}
                     if t in k.replace("_", " "):
                         input_dict[k] = 1
                         matched.append(k)
@@ -347,6 +346,8 @@ def main():
         st.session_state.auth = False
     if "last_processed_file_hash" not in st.session_state:
         st.session_state.last_processed_file_hash = None
+    if "cached_mask_preview" not in st.session_state:
+        st.session_state.cached_mask_preview = None
 
     v_id = get_visitor_id()
 
@@ -387,10 +388,8 @@ def main():
             uploaded_file = st.file_uploader("Upload Patient Report", type=["pdf", "png", "jpg", "jpeg"])
 
             if uploaded_file is not None:
-                # 1. Compute fingerprint hash of the uploaded document bytes
                 file_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
 
-                # 2. Check if this document has already been processed during this loop cycle
                 if st.session_state.last_processed_file_hash != file_hash:
                     st.sidebar.success("📦 Scanned file buffered successfully!")
 
@@ -403,8 +402,8 @@ def main():
 
                         st.sidebar.success("🎯 Analysis Complete!")
 
-                        # Lock text matrix details and update the validation fingerprint
                         st.session_state.extracted_file_text = results["ocr_text"]
+                        st.session_state.cached_mask_preview = results["mask_preview"]
                         st.session_state.last_processed_file_hash = file_hash
                         st.rerun()
 
@@ -412,7 +411,6 @@ def main():
                         st.sidebar.error(f"Inference Failure: {eval_err}")
                         st.session_state.last_processed_file_hash = file_hash
 
-                # Render fallback UI parameters using session history elements
                 if 'ocr_pipeline' in st.session_state:
                     tab_metrics, tab_mask = st.sidebar.tabs(["Analysis", "U-Net Mask"])
                     with tab_metrics:
@@ -421,8 +419,11 @@ def main():
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
-                        # 🎯 2026 Layout fix: Standard adaptive container parameter to clear server warning chains
-                        st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Segmented Mask", use_container_width=True)
+                        # 🎯 FIX: Render the dynamically cached live array instead of an empty black block
+                        if st.session_state.cached_mask_preview is not None:
+                            st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions", use_container_width=True)
+                        else:
+                            st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Mask Cache Empty", use_container_width=True)
 
     # --- MAIN ENGINE DIALOGUE AREA ---
     st.title("💬 AI Health Assistant")
@@ -437,10 +438,9 @@ def main():
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Automated Pipeline Interceptor Hook: Evaluates text extracted via side uploads
     if 'extracted_file_text' in st.session_state and st.session_state.extracted_file_text:
         ocr_payload = st.session_state.extracted_file_text
-        del st.session_state['extracted_file_text']  # Evacuate index payload to break runtime loop states
+        del st.session_state['extracted_file_text']
 
         st.session_state.messages.append({"role": "user", "content": f"📋 *[Uploaded Report Data]:* {ocr_payload}"})
 
