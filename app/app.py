@@ -191,7 +191,6 @@ class OCRReaderPipeline:
 
         self.text_recognizer = MedicalCRNN(self.encoder.vocab_size).to(self.device)
 
-        # 🎯 TYPO REMOVED: Successfully cleaned the variable collision block
         if os.path.exists(CRNN_WEIGHTS):
             self.text_recognizer.load_state_dict(torch.load(CRNN_WEIGHTS, map_location=self.device))
 
@@ -282,10 +281,10 @@ class OCRReaderPipeline:
                 if isinstance(ctr, np.ndarray) and len(ctr) > 0:
                     xc, yc, wc, hc = cv2.boundingRect(ctr)
 
+                    # 🎯 FIXED: Open up the macro bounding gates and drop the loop skip 'continue' rule
                     if wc > (w * 0.995):
                         valid_contours.append(ctr)
-                        continue
-                    if wc > 8 and hc > 3 and hc < (h * 0.95):
+                    elif wc > 8 and hc > 3 and hc < (h * 0.95):
                         valid_contours.append(ctr)
 
             preview_canvas = np.zeros((h, w), dtype=np.uint8)
