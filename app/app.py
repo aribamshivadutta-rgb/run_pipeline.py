@@ -257,6 +257,7 @@ class OCRReaderPipeline:
         # --- STEP 2: Adaptive Document Segmentation Sequence ---
         final_text_lines = []
         mask_status_log = "⚠️ Neural Network Weights Uninitialized or Not Found"
+        debug_crops_pool = []
 
         if self.text_recognizer is not None:
             if self.detector is not None and np.sum(mask) > 1000:
@@ -281,7 +282,6 @@ class OCRReaderPipeline:
                 if isinstance(ctr, np.ndarray) and len(ctr) > 0:
                     xc, yc, wc, hc = cv2.boundingRect(ctr)
 
-                    # 🎯 FIXED: Open up the macro bounding gates and drop the loop skip 'continue' rule
                     if wc > (w * 0.995):
                         valid_contours.append(ctr)
                     elif wc > 8 and hc > 3 and hc < (h * 0.95):
@@ -339,6 +339,10 @@ class OCRReaderPipeline:
                     resized_crop = cv2.bitwise_not(resized_crop)
 
                 crnn_input[0:nh, 0:nw] = resized_crop
+
+                if len(debug_crops_pool) < 4:
+                    debug_crops_pool.append(crnn_input.copy())
+
                 crnn_input = crnn_input.astype(np.float32) / 255.0
 
                 if USE_ZERO_CENTERED_SCALE:
@@ -399,7 +403,8 @@ class OCRReaderPipeline:
             "confidence": f"{confidence_score:.2f}%",
             "router_accuracy": accuracy,
             "mask_preview": ui_mask_preview,
-            "mask_status": mask_status_log
+            "mask_status": mask_status_log,
+            "debug_crops": debug_crops_pool
         }
 
 
@@ -550,6 +555,7 @@ def main():
                         st.session_state.extracted_file_text = results["ocr_text"]
                         st.session_state.cached_mask_preview = results["mask_preview"].copy()
                         st.session_state.mask_execution_log = results["mask_status"]
+                        st.session_state.debug_crops = results.get("debug_crops", [])
                         st.session_state.last_processed_file_hash = file_hash
                         st.rerun()
 
@@ -558,7 +564,7 @@ def main():
                         st.session_state.last_processed_file_hash = file_hash
 
                 if 'ocr_pipeline' in st.session_state or st.session_state.last_processed_file_hash is not None:
-                    tab_metrics, tab_mask = st.sidebar.tabs(["Analysis", "U-Net Mask"])
+                    tab_metrics, tab_mask, tab_debug = st.sidebar.tabs(["Analysis", "U-Net Mask", "CRNN Input Debug"])
                     with tab_metrics:
                         detector_loaded = st.session_state.ocr_pipeline.detector is not None
                         st.sidebar.caption(f"Expected Path: `{DETECTOR_WEIGHTS}`")
@@ -579,9 +585,15 @@ def main():
                         if st.session_state.cached_mask_preview is not None:
                             st.image(st.session_state.cached_mask_preview,
                                      caption="Target Contour Segmentation Preview Canvas", width="stretch")
+
+                    with tab_debug:
+                        st.caption("🔍 Visual Debugger: Real crops entering model neural filters:")
+                        crops = st.session_state.get("debug_crops", [])
+                        if crops:
+                            for idx, crop_frame in enumerate(crops):
+                                st.image(crop_frame, caption=f"Crop Segment Frame Row #{idx + 1}", width="stretch")
                         else:
-                            st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Mask Cache Empty",
-                                     width="stretch")
+                            st.info("No active line chunks cached in memory.")
 
     st.title("💬 AI Health Assistant")
 
