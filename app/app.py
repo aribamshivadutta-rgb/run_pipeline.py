@@ -215,7 +215,7 @@ class OCRReaderPipeline:
         img_for_crnn = raw_img.copy()
         h, w = raw_img.shape
 
-        # --- STEP 1: Execute Contrast-Aware Deep Feature Extraction (U-Net Sigmoid Detach Engine) ---
+        # --- STEP 1: Execute Contrast-Aware Deep Feature Extraction (U-Net Fix) ---
         resized_img = cv2.resize(raw_img, (512, 512))
 
         if np.mean(resized_img) > 127:
@@ -291,11 +291,15 @@ class OCRReaderPipeline:
 
                 line_crop = img_for_crnn[pad_y1:pad_y2, pad_x1:pad_x2]
 
+                if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
+                    continue
+
+                # ✅ FIXED: Force strict mapping to 4D [Batch, Channel, Height, Width] sequence parameters
                 crnn_input = cv2.resize(line_crop, (256, 64))
                 crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
 
-                # 🧪 FIX: Swapped to a direct [0, 1] normalization range baseline to break the "PAPAPA" loop trap
-                crnn_tensor = torch.from_numpy(crnn_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
+                crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
+                crnn_tensor = crnn_tensor.unsqueeze(0).unsqueeze(0)
 
                 with torch.no_grad():
                     preds = self.text_recognizer(crnn_tensor)
@@ -351,7 +355,6 @@ class MedicalAI:
         self.load_resources()
 
     def load_resources(self):
-        # 🎯 FIXED: Replaced blocking st.error lockdown branch with a soft initialization safety layer
         if os.path.exists(MODEL_PATH) and os.path.exists(LE_PATH):
             try:
                 self.model = joblib.load(MODEL_PATH)
@@ -364,7 +367,7 @@ class MedicalAI:
             except Exception as e:
                 print(f"Soft Initialization Layer Warning: {e}")
         else:
-            # Set structural placeholders so 'verify now' works gracefully instead of freezing the UI thread
+            # Set healthy baseline placeholders so 'verify now' command can run safely
             self.known_symptoms = ["fever", "cough", "headache", "fatigue", "vomiting"]
             self.known_diseases = ["influenza", "common cold"]
 
@@ -525,7 +528,6 @@ def main():
     # --- MAIN ENGINE DIALOGUE AREA ---
     st.title("💬 AI Health Assistant")
 
-    # Render warning callout directly in view to keep track of classifier asset statuses
     weights_ready = os.path.exists(MODEL_PATH) and os.path.exists(LE_PATH)
     if not weights_ready:
         st.warning(
