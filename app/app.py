@@ -166,7 +166,11 @@ class MedicalCRNN(nn.Module):
     def forward(self, img_tensor):
         features = self.cnn(img_tensor)
         b, c, h, w = features.size()
-        features = features.view(b, w, c * h)
+
+        # 🎯 RESOLVED: Squeezed spatial layout dimensions to align sequence paths correctly
+        features = features.view(b, c * h, w)  # Collapse height into channel dimension: [B, C*H, W]
+        features = features.permute(0, 2, 1)  # Permute width to represent sequential steps: [B, W, C*H]
+
         rnn_out, _ = self.rnn(features)
         logits = self.fc(rnn_out)
         return logits.log_softmax(2)
@@ -203,7 +207,7 @@ class OCRReaderPipeline:
             self.router = joblib.load(TRAFFIC_ROUTER_WEIGHTS)
             self.vectorizer = joblib.load(TRAFFIC_VECTORIZER_WEIGHTS)
 
-    def process_image(self, image_input, true_label=None, preset_mode="Standard PyTorch (Centered)"):
+    def process_image(self, image_input, true_label=None, preset_mode="High-Contrast Document (Zero-Centered)"):
         raw_img = None
 
         if isinstance(image_input, str):
@@ -306,18 +310,21 @@ class OCRReaderPipeline:
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
             # ====================================================================
-            # INTERACTIVE PRESET CONFIGURATION STRIP ENGINE
+            # INTERACTIVE PRESET CONFIGURATION MATRIX PIPELINE
             # ====================================================================
-            if preset_mode == "Standard PyTorch (Centered)":
+            if preset_mode == "High-Contrast Document (Zero-Centered)":
+                EXPECTS_DARK_TEXT = False
+                USE_ZERO_CENTERED_SCALE = True
+            elif preset_mode == "Inverted Light Background":
+                EXPECTS_DARK_TEXT = False
+                USE_ZERO_CENTERED_SCALE = False
+            elif preset_mode == "Standard PyTorch (Centered)":
                 EXPECTS_DARK_TEXT = True
                 USE_ZERO_CENTERED_SCALE = True
             elif preset_mode == "Raw Intensity Map ([0, 1])":
                 EXPECTS_DARK_TEXT = True
                 USE_ZERO_CENTERED_SCALE = False
-            elif preset_mode == "Inverted Light Background":
-                EXPECTS_DARK_TEXT = False
-                USE_ZERO_CENTERED_SCALE = False
-            else:  # Custom Native Matrix
+            else:
                 EXPECTS_DARK_TEXT = False
                 USE_ZERO_CENTERED_SCALE = True
             # ====================================================================
@@ -335,7 +342,6 @@ class OCRReaderPipeline:
 
                 target_w, target_h = 256, 64
 
-                # Dynamic padding brightness calculator engine prevents bleeding
                 bg_color = int(np.median(line_crop)) if line_crop.size > 0 else 255
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_color
 
@@ -531,11 +537,15 @@ def main():
             st.divider()
             st.subheader("Clinical Data Upload")
 
-            # Interactive dropdown preset matrix configuration selection menu
+            # 🎯 REGISTERED: Prioritized high-contrast text choices directly within menu indices
             selected_preset = st.selectbox(
                 "CRNN Tensor Matrix Preset",
-                ["Standard PyTorch (Centered)", "Raw Intensity Map ([0, 1])", "Inverted Light Background",
-                 "Custom Native Matrix"]
+                [
+                    "High-Contrast Document (Zero-Centered)",
+                    "Inverted Light Background",
+                    "Standard PyTorch (Centered)",
+                    "Raw Intensity Map ([0, 1])"
+                ]
             )
 
             uploaded_file = st.file_uploader("Upload Patient Report", type=["pdf", "png", "jpg", "jpeg"])
