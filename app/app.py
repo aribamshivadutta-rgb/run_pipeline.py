@@ -420,7 +420,7 @@ def main():
 
                     with tab_mask:
                         # 🎯 FIXED: Replaced 'use_column_width="always"' with standard 'use_container_width=True'
-                        st.image(results["mask_preview"], caption="U-Net Segmented Mask", use_container_width=True)
+                        st.image(results["mask_preview"], caption="U-Net Segmented Mask", width="stretch")
 
                 except Exception as eval_err:
                     st.sidebar.error(f"Inference Failure: {eval_err}")
