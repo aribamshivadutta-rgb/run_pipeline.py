@@ -20,7 +20,6 @@ from pdf2image import convert_from_bytes
 
 # Avoid relative import breakages by dynamically adding scripts path to system environment
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 🎯 FIXED: Correctly isolate parent directory path if runtime executes from a script file wrapper string
 if CURRENT_SCRIPT_DIR.endswith('.py'):
     PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_SCRIPT_DIR))
 else:
@@ -119,7 +118,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ROBUST INTEGRATION)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ADAPTIVE SEGMENTATION)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -235,7 +234,7 @@ class OCRReaderPipeline:
                 dynamic_threshold = 0.5 if max_activation > 0.5 else (max_activation * 0.8)
                 mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
 
-        # --- STEP 2: Advanced Word Contour Slicing Sequence (CRNN Alignment & Logging Fix) ---
+        # --- STEP 2: Adaptive Document Segmentation Sequence (CRNN Layout Alignment) ---
         final_text_lines = []
         mask_status_log = "⚠️ Neural Network Weights Uninitialized or Not Found"
 
@@ -246,12 +245,16 @@ class OCRReaderPipeline:
             else:
                 mask_status_log = "🔴 U-Net Mask Empty (Solid Black Canvas) -> Swapped to Adaptive Morphology Processing Engine"
 
+                # Dynamic Style Kernel Mapping: Check document background intensity distributions
                 if np.mean(raw_img) > 127:
+                    # Light background handwritten prescription -> Use tight phrase boundary dilation
                     _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 4))
                 else:
+                    # Dark background printed document -> Use macro paragraph structural block layout consolidation
                     _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (60, 6))
 
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
                 resized_mask = cv2.dilate(thresh, kernel, iterations=1)
 
             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -260,9 +263,9 @@ class OCRReaderPipeline:
             for ctr in contours:
                 if isinstance(ctr, np.ndarray) and len(ctr) > 0:
                     xc, yc, wc, hc = cv2.boundingRect(ctr)
-                    if wc > (w * 0.90):
+                    if wc > (w * 0.95):
                         continue
-                    if wc > 25 and hc > 8 and hc < (h // 6):
+                    if wc > 20 and hc > 6 and hc < (h // 4):
                         valid_contours.append(ctr)
 
             preview_canvas = np.zeros((h, w), dtype=np.uint8)
@@ -283,8 +286,8 @@ class OCRReaderPipeline:
             for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
 
-                pad_y1 = max(0, y - 4)
-                pad_y2 = min(h, y + ch + 4)
+                pad_y1 = max(0, y - 3)
+                pad_y2 = min(h, y + ch + 3)
                 pad_x1 = max(0, x - 4)
                 pad_x2 = min(w, x + cw + 4)
 
@@ -314,7 +317,7 @@ class OCRReaderPipeline:
         # --- STEP 3: Compute Linear Vector Routing (LightGBM Decision Matrix) ---
         category_label = "Prescription/Symptom"
         confidence_score = 100.0
-        pred_label = 0  # 🎯 FIXED: Establish baseline initialization value to prevent unbound local reference crashes
+        pred_label = 0
 
         if self.router and self.vectorizer and ocr_text_output != "No readable text extracted.":
             vec_text = self.vectorizer.transform([ocr_text_output])
@@ -373,7 +376,7 @@ class MedicalAI:
 
     def execute_verification_cycle(self):
         try:
-            st.info("⚠️ Recalculating machine learning weights...")
+            st.info("🧠 Recalculating machine learning weights...")
             subprocess.run([sys.executable, PREPROCESS_SCRIPT], check=True)
             subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
             self.load_resources()
