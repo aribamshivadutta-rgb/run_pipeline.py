@@ -224,20 +224,18 @@ class OCRReaderPipeline:
         final_text_lines = []
 
         if self.text_recognizer is not None:
-            # Check if our U-Net mask actually caught active activations (Solid Black Canvas Safe Lock)
             if self.detector is not None and np.sum(mask) > 1000:
                 resized_mask = cv2.resize(mask, (w, h)).astype(np.uint8)
             else:
-                # 🛠️ Fallback Adaptive morphology engine to map lines on blank U-Net frames
+                # Fallback Adaptive morphology engine to map lines on blank U-Net frames
                 _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 4))
                 resized_mask = cv2.dilate(thresh, kernel, iterations=1)
-                mask = cv2.resize(resized_mask, (512, 512))  # Synchronize preview viewport matrix dimensions
+                mask = cv2.resize(resized_mask, (512, 512)).astype(np.uint8)
 
             # Find coordinates for segmented text rows
             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-            # Structurally filter to guarantee standard NumPy validation vectors are evaluated
             valid_contours = []
             for ctr in contours:
                 if isinstance(ctr, np.ndarray) and len(ctr) > 0:
@@ -249,16 +247,12 @@ class OCRReaderPipeline:
             if len(valid_contours) > 0:
                 valid_contours = sorted(valid_contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
             else:
-                # Hard-cast fallback coordinates to structured 3D int32 array for OpenCV safety checks
                 valid_contours = [np.array([[[0, 0]], [[0, h]], [[w, h]], [[w, 0]]], dtype=np.int32)]
 
             for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
-
-                # Crop out the precise single row slice
                 line_crop = img_for_crnn[y:y + ch, x:x + cw]
 
-                # Re-align matrix structures cleanly for the CRNN LSTM input channel allocations
                 crnn_input = cv2.resize(line_crop, (256, 64))
                 crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
                 crnn_input = (crnn_input - 0.5) / 0.5
@@ -269,7 +263,6 @@ class OCRReaderPipeline:
                     best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
                     decoded_line = self.encoder.decode(best_path).strip()
 
-                    # Block stray artifact tokens or broken 'Nee' sequences from entering dialogue stream
                     if len(decoded_line) > 1 and decoded_line.lower() != "nee":
                         final_text_lines.append(decoded_line)
 
@@ -441,7 +434,7 @@ def main():
                         st.sidebar.success("🎯 Analysis Complete!")
 
                         st.session_state.extracted_file_text = results["ocr_text"]
-                        st.session_state.cached_mask_preview = results["mask_preview"]
+                        st.session_state.cached_mask_preview = results["mask_preview"].copy()
                         st.session_state.last_processed_file_hash = file_hash
                         st.rerun()
 
@@ -457,7 +450,6 @@ def main():
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
-                        # 🎯 FIXED: Synchronized layout channels to width="stretch" standard to mute 2026 logs
                         if st.session_state.cached_mask_preview is not None:
                             st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions",
                                      width="stretch")
