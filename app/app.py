@@ -114,7 +114,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ROBUST EXECUTION)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ROBUST INTEGRATION)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -213,7 +213,6 @@ class OCRReaderPipeline:
         # --- STEP 1: Execute Contrast-Aware Deep Feature Extraction (U-Net Fix) ---
         resized_img = cv2.resize(raw_img, (512, 512))
 
-        # Automatic contrast check: Invert dark text on bright paper to match U-Net expectations
         if np.mean(resized_img) > 127:
             processed_unet_input = cv2.bitwise_not(resized_img)
         else:
@@ -228,21 +227,30 @@ class OCRReaderPipeline:
                 mask_output = self.detector(img_tensor)
                 raw_mask_np = mask_output.squeeze().cpu().numpy()
                 max_activation = np.max(raw_mask_np)
-                # Dynamic Thresholding avoids snapping to pure black on weak activations
                 dynamic_threshold = 0.5 if max_activation > 0.5 else (max_activation * 0.8)
                 mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
 
-        # --- STEP 2: Advanced Word Contour Slicing Sequence (CRNN Alignment Fix) ---
+        # --- STEP 2: Advanced Word Contour Slicing Sequence (CRNN Alignment & Logging Fix) ---
         final_text_lines = []
+        mask_status_log = "⚠️ Neural Network Weights Uninitialized or Not Found"
 
         if self.text_recognizer is not None:
-            # Check if U-Net generated valid activations
+            # 🔍 VERIFICATION LOGGING ENGINE: Determine if the neural network layer triggered an active mask
             if self.detector is not None and np.sum(mask) > 1000:
                 resized_mask = cv2.resize(mask, (w, h)).astype(np.uint8)
+                mask_status_log = f"🟢 U-Net Target Mask Active! Found {np.sum(mask > 0)} active tensor segmentation pixels."
+                print(f"[PIPELINE LOG] {mask_status_log}")
             else:
-                # High-contrast adaptive morphology engine fallback
-                _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                # Tighter vertical-horizontal kernel maps phrase units rather than giant page columns
+                # Fallback Morphology Layer triggers if the U-Net mask evaluates completely blank
+                mask_status_log = "🔴 U-Net Mask Empty (Solid Black Canvas) -> Swapped to Adaptive Morphology Processing Engine"
+                print(f"[PIPELINE LOG] {mask_status_log}")
+
+                # Check background intensity to handle clean text sheets vs dark mask fields natively
+                if np.mean(raw_img) > 127:
+                    _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                else:
+                    _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
                 resized_mask = cv2.dilate(thresh, kernel, iterations=1)
 
@@ -253,7 +261,6 @@ class OCRReaderPipeline:
             for ctr in contours:
                 if isinstance(ctr, np.ndarray) and len(ctr) > 0:
                     xc, yc, wc, hc = cv2.boundingRect(ctr)
-                    # Filter out long solid pre-printed template rule lines
                     if wc > (w * 0.90):
                         continue
                     if wc > 25 and hc > 8 and hc < (h // 6):
@@ -265,7 +272,6 @@ class OCRReaderPipeline:
                 valid_contours = sorted(valid_contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
                 cv2.drawContours(preview_canvas, valid_contours, -1, (255), thickness=cv2.FILLED)
             else:
-                # Grid fallback segment array if frames trace empty
                 chunk_h = h // 12
                 for i in range(12):
                     fallback_box = np.array(
@@ -280,7 +286,6 @@ class OCRReaderPipeline:
             for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
 
-                # Safe padding boundaries prevent edge character clipping
                 pad_y1 = max(0, y - 4)
                 pad_y2 = min(h, y + ch + 4)
                 pad_x1 = max(0, x - 4)
@@ -328,7 +333,8 @@ class OCRReaderPipeline:
             "category": category_label,
             "confidence": f"{confidence_score:.2f}%",
             "router_accuracy": accuracy,
-            "mask_preview": ui_mask_preview
+            "mask_preview": ui_mask_preview,
+            "mask_status": mask_status_log
         }
 
 
@@ -415,6 +421,8 @@ def main():
         st.session_state.last_processed_file_hash = None
     if "cached_mask_preview" not in st.session_state:
         st.session_state.cached_mask_preview = None
+    if "mask_execution_log" not in st.session_state:
+        st.session_state.mask_execution_log = "No file parsed during this session loop."
 
     v_id = get_visitor_id()
 
@@ -471,6 +479,7 @@ def main():
 
                         st.session_state.extracted_file_text = results["ocr_text"]
                         st.session_state.cached_mask_preview = results["mask_preview"].copy()
+                        st.session_state.mask_execution_log = results["mask_status"]
                         st.session_state.last_processed_file_hash = file_hash
                         st.rerun()
 
@@ -481,14 +490,27 @@ def main():
                 if 'ocr_pipeline' in st.session_state or st.session_state.last_processed_file_hash is not None:
                     tab_metrics, tab_mask = st.sidebar.tabs(["Analysis", "U-Net Mask"])
                     with tab_metrics:
+                        # 📁 absolute Path tracking diagnostics indicators
+                        detector_loaded = st.session_state.ocr_pipeline.detector is not None
+                        st.sidebar.caption(f"Expected Path: `{DETECTOR_WEIGHTS}`")
+                        st.sidebar.caption(
+                            f"File Found? `{os.path.exists(DETECTOR_WEIGHTS)}` | Initialized? `{detector_loaded}`")
+                        st.sidebar.divider()
+
                         st.metric("Inferred Category", "Prescription/Symptom")
                         st.metric("Router Confidence", "93.90%")
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
+                        # 📝 NATIVE FRONT-END VISUAL LAYER LOGGING OUTPUT PANEL
+                        if "🟢" in st.session_state.mask_execution_log:
+                            st.success(st.session_state.mask_execution_log)
+                        else:
+                            st.info(st.session_state.mask_execution_log)
+
                         if st.session_state.cached_mask_preview is not None:
-                            st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions",
-                                     width="stretch")
+                            st.image(st.session_state.cached_mask_preview,
+                                     caption="Target Contour Segmentation Preview Canvas", width="stretch")
                         else:
                             st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Mask Cache Empty",
                                      width="stretch")
