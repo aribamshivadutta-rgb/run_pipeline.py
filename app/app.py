@@ -114,7 +114,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (MORPH FALLBACK)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ROBUST EXECUTION)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -208,50 +208,85 @@ class OCRReaderPipeline:
             raise ValueError("File content empty or corrupt array stream presented.")
 
         img_for_crnn = raw_img.copy()
-
-        # STEP 1: Execute Deep Feature Extraction (U-Net Line Segmentation)
         h, w = raw_img.shape
-        img_input = cv2.resize(raw_img, (512, 512)) / 255.0
+
+        # --- STEP 1: Execute Contrast-Aware Deep Feature Extraction (U-Net Fix) ---
+        resized_img = cv2.resize(raw_img, (512, 512))
+
+        # Automatic contrast check: Invert dark text on bright paper to match U-Net expectations
+        if np.mean(resized_img) > 127:
+            processed_unet_input = cv2.bitwise_not(resized_img)
+        else:
+            processed_unet_input = resized_img.copy()
+
+        img_input = processed_unet_input / 255.0
         img_tensor = torch.from_numpy(img_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
 
         mask = np.zeros((512, 512), dtype=np.uint8)
         if self.detector is not None:
             with torch.no_grad():
                 mask_output = self.detector(img_tensor)
-                mask = (mask_output.squeeze().cpu().numpy() > 0.5).astype(np.uint8) * 255
+                raw_mask_np = mask_output.squeeze().cpu().numpy()
+                max_activation = np.max(raw_mask_np)
+                # Dynamic Thresholding avoids snapping to pure black on weak activations
+                dynamic_threshold = 0.5 if max_activation > 0.5 else (max_activation * 0.8)
+                mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
 
-        # STEP 2: Advanced Row Slicing & Character Recognition Sequence (With Adaptive Morph Fallback)
+        # --- STEP 2: Advanced Word Contour Slicing Sequence (CRNN Alignment Fix) ---
         final_text_lines = []
 
         if self.text_recognizer is not None:
+            # Check if U-Net generated valid activations
             if self.detector is not None and np.sum(mask) > 1000:
                 resized_mask = cv2.resize(mask, (w, h)).astype(np.uint8)
             else:
-                # Fallback Adaptive morphology engine to map lines on blank U-Net frames
+                # High-contrast adaptive morphology engine fallback
                 _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 4))
+                # Tighter vertical-horizontal kernel maps phrase units rather than giant page columns
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
                 resized_mask = cv2.dilate(thresh, kernel, iterations=1)
-                mask = cv2.resize(resized_mask, (512, 512)).astype(np.uint8)
 
-            # Find coordinates for segmented text rows
+            # Trace bounding boundaries of text components
             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             valid_contours = []
             for ctr in contours:
                 if isinstance(ctr, np.ndarray) and len(ctr) > 0:
                     xc, yc, wc, hc = cv2.boundingRect(ctr)
-                    if wc > 30 and hc > 8 and hc < (h // 4):
+                    # Filter out long solid pre-printed template rule lines
+                    if wc > (w * 0.90):
+                        continue
+                    if wc > 25 and hc > 8 and hc < (h // 6):
                         valid_contours.append(ctr)
 
-            # Sort valid contours from top to bottom row reading directions
+            # Create clean visual contour preview tracking layout for the sidebar UI tab
+            preview_canvas = np.zeros((h, w), dtype=np.uint8)
             if len(valid_contours) > 0:
                 valid_contours = sorted(valid_contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
+                cv2.drawContours(preview_canvas, valid_contours, -1, (255), thickness=cv2.FILLED)
             else:
-                valid_contours = [np.array([[[0, 0]], [[0, h]], [[w, h]], [[w, 0]]], dtype=np.int32)]
+                # Grid fallback segment array if frames trace empty
+                chunk_h = h // 12
+                for i in range(12):
+                    fallback_box = np.array(
+                        [[[0, i * chunk_h]], [[0, (i + 1) * chunk_h]], [[w, (i + 1) * chunk_h]], [[w, i * chunk_h]]],
+                        dtype=np.int32)
+                    valid_contours.append(fallback_box)
+                cv2.drawContours(preview_canvas, valid_contours, -1, (255), thickness=1)
 
+            ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
+
+            # Crop text blocks sequentially and process via CRNN text engine
             for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
-                line_crop = img_for_crnn[y:y + ch, x:x + cw]
+
+                # Safe padding boundaries prevent edge character clipping
+                pad_y1 = max(0, y - 4)
+                pad_y2 = min(h, y + ch + 4)
+                pad_x1 = max(0, x - 4)
+                pad_x2 = min(w, x + cw + 4)
+
+                line_crop = img_for_crnn[pad_y1:pad_y2, pad_x1:pad_x2]
 
                 crnn_input = cv2.resize(line_crop, (256, 64))
                 crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
@@ -269,11 +304,12 @@ class OCRReaderPipeline:
             ocr_text_output = " \n ".join(final_text_lines)
         else:
             ocr_text_output = "No readable text extracted."
+            ui_mask_preview = np.zeros((512, 512), dtype=np.uint8)
 
         if not ocr_text_output.strip():
             ocr_text_output = "No readable text extracted."
 
-        # STEP 3: Compute Linear Vector Routing (LightGBM Decision Matrix)
+        # --- STEP 3: Compute Linear Vector Routing (LightGBM Decision Matrix) ---
         category_label = "Prescription/Symptom"
         confidence_score = 100.0
 
@@ -292,7 +328,7 @@ class OCRReaderPipeline:
             "category": category_label,
             "confidence": f"{confidence_score:.2f}%",
             "router_accuracy": accuracy,
-            "mask_preview": mask
+            "mask_preview": ui_mask_preview
         }
 
 
