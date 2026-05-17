@@ -2,15 +2,17 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
-from PIL import Image
+import cv2
+import numpy as np
 import pandas as pd
-import torchvision.transforms as T
 from tqdm import tqdm
 import os
+import random
 
 
-# --- 1. ENCODER ---
-# Maps characters to numbers for CTC Loss.
+# ====================================================================
+# 1. ENCODER ALIGNMENT
+# ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
         self.chars = " %()-./012345678?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -32,10 +34,11 @@ class MedicalLabelEncoder:
         return len(self.chars) + 1
 
 
-# --- 2. DATASET LOADER ---
+# ====================================================================
+# 2. ADVANCED DATASET LOADER WITH AUGMENTATION
+# ====================================================================
 class MedicalDataset(Dataset):
-    def __init__(self, csv_file, img_dir, encoder):
-        # Using ISO-8859-1 to handle special characters in medical names
+    def __init__(self, csv_file, img_dir, encoder, is_training=True):
         try:
             self.df = pd.read_csv(csv_file, encoding='utf-8')
         except:
@@ -43,12 +46,7 @@ class MedicalDataset(Dataset):
 
         self.img_dir = img_dir
         self.encoder = encoder
-        self.transform = T.Compose([
-            T.Grayscale(),
-            T.Resize((64, 256)),
-            T.ToTensor(),
-            T.Normalize((0.5,), (0.5,))
-        ])
+        self.is_training = is_training
 
     def __len__(self):
         return len(self.df)
@@ -58,16 +56,51 @@ class MedicalDataset(Dataset):
         label_text = self.df.iloc[idx, 1]
         img_path = os.path.join(self.img_dir, str(img_name))
 
-        if not os.path.exists(img_path):
+        if not os.path.exists(img_path) or pd.isna(label_text):
             return torch.zeros((1, 64, 256)), torch.LongTensor([0]), torch.LongTensor([1])
 
-        image = Image.open(img_path).convert("L")
-        image = self.transform(image)
-        label = torch.LongTensor(self.encoder.encode(label_text))
-        return image, label, torch.LongTensor([len(label)])
+        raw_img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        if raw_img is None:
+            return torch.zeros((1, 64, 256)), torch.LongTensor([0]), torch.LongTensor([1])
+
+        # Apply robust binarization
+        if np.mean(raw_img) > 127:
+            _, processed_img = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else:
+            _, processed_img = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # 🎯 GEOMETRIC DATA AUGMENTATION PASS
+        if self.is_training and random.random() < 0.35:
+            # Mild rotation adjustment simulating hurried handwriting angles (-3 to +3 degrees)
+            angle = random.uniform(-3, 3)
+            h_r, w_r = processed_img.shape
+            M = cv2.getRotationMatrix2D((w_r // 2, h_r // 2), angle, 1.0)
+            processed_img = cv2.warpAffine(processed_img, M, (w_r, h_r), borderValue=255)
+
+        target_w, target_h = 256, 64
+        padded_canvas = np.ones((target_h, target_w), dtype=np.uint8) * 255
+
+        scale = min(target_w / processed_img.shape[1], target_h / processed_img.shape[0])
+        nw, nh = max(4, int(processed_img.shape[1] * scale)), max(4, int(processed_img.shape[0] * scale))
+        resized_crop = cv2.resize(processed_img, (min(nw, target_w), min(nh, target_h)))
+
+        start_x = max(0, (target_w - nw) // 2)
+        start_y = max(0, (target_h - nh) // 2)
+        padded_canvas[start_y:start_y + nh, start_x:start_x + nw] = resized_crop
+
+        tensor_img = padded_canvas.astype(np.float32) / 255.0
+        tensor_img = torch.from_numpy(tensor_img).unsqueeze(0).float()
+
+        label_encoded = self.encoder.encode(label_text)
+        if not label_encoded:
+            label_encoded = [0]
+
+        return tensor_img, torch.LongTensor(label_encoded), torch.LongTensor([len(label_encoded)])
 
 
-# --- 3. ARCHITECTURE: MedicalCRNN ---
+# ====================================================================
+# 3. ARCHITECTURE BLOCK
+# ====================================================================
 class MedicalCRNN(nn.Module):
     def __init__(self, vocab_size):
         super(MedicalCRNN, self).__init__()
@@ -77,62 +110,69 @@ class MedicalCRNN(nn.Module):
             nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(),
             nn.Conv2d(256, 256, 3, padding=1), nn.ReLU(), nn.MaxPool2d((2, 1))
         )
-        self.rnn = nn.LSTM(2048, 256, bidirectional=True, num_layers=2, batch_first=True)
+        self.rnn = nn.LSTM(input_size=2048, hidden_size=256, num_layers=2, bidirectional=True, batch_first=True)
         self.fc = nn.Linear(512, vocab_size)
 
-    def forward(self, x):
-        x = self.cnn(x)
-        b, c, h, w = x.size()
-        x = x.view(b, w, c * h)
-        x, _ = self.rnn(x)
-        x = self.fc(x)
-        return x.log_softmax(2)
+    def forward(self, img_tensor):
+        features = self.cnn(img_tensor)
+        b, c, h, w = features.size()
+
+        features = features.view(b, c * h, w)
+        features = features.permute(0, 2, 1)
+
+        rnn_out, _ = self.rnn(features)
+        logits = self.fc(rnn_out)
+        return logits.log_softmax(2)
 
 
-# --- 4. TRAINING EXECUTION ---
+# ====================================================================
+# 4. TRAINING PERFORMANCE HARNESS EXECUTION
+# ====================================================================
 def run_training():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     encoder = MedicalLabelEncoder()
 
-    # --- DYNAMIC PATH DETECTION ---
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir))
 
-    # Path to the CLEAN data created by your preprocessor
     CLEAN_BASE = os.path.join(PROJECT_ROOT, 'data', 'clean', 'MedicalCRNN_clean')
     TRAIN_CSV = os.path.join(CLEAN_BASE, 'Train_Label.csv')
     TRAIN_DIR = os.path.join(CLEAN_BASE, 'train')
 
-    # Path to save the trained model
     MODEL_SAVE_PATH = os.path.join(PROJECT_ROOT, 'models', 'MedicalCRNN_v1.pth')
     os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
 
     if not os.path.exists(TRAIN_CSV):
-        print(f"ERROR: Cannot find labels at {TRAIN_CSV}. Run preprocessor first.")
+        print(f"❌ ERROR: Missing target data labels at {TRAIN_CSV}.")
         return
 
-    # Load Data
-    train_ds = MedicalDataset(TRAIN_CSV, TRAIN_DIR, encoder)
+    train_ds = MedicalDataset(TRAIN_CSV, TRAIN_DIR, encoder, is_training=True)
 
     def collate_fn(batch):
         images, labels, lengths = zip(*batch)
         return torch.stack(images, 0), \
-            nn.utils.rnn.pad_sequence(labels, batch_first=True), \
+            nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=0), \
             torch.cat(lengths, 0)
 
     train_loader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=collate_fn)
 
     model = MedicalCRNN(encoder.vocab_size).to(device)
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
-    optimizer = optim.Adam(model.parameters(), lr=0.0005)
 
-    print(f"Starting Training on {len(train_ds)} images...")
-    print(f"Model will be saved to: {MODEL_SAVE_PATH}")
+    # Standard base learning rate initialization
+    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
 
-    for epoch in range(50):
+    # 🎯 STEP COUPLING PATTERN: Cosine Annealing scheduler targets localized global minima precisely
+    TOTAL_EPOCHS = 60
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=TOTAL_EPOCHS, eta_min=1e-6)
+
+    print(f"🚀 Initializing Optimized Training Engine on: {device}")
+    print(f"📊 Loaded {len(train_ds)} valid prescription samples for optimization.")
+
+    for epoch in range(TOTAL_EPOCHS):
         model.train()
         epoch_loss = 0
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{TOTAL_EPOCHS}")
 
         for imgs, labels, lengths in progress_bar:
             imgs, labels = imgs.to(device), labels.to(device)
@@ -143,13 +183,40 @@ def run_training():
 
             loss = criterion(preds, labels, input_lens, lengths)
             loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
             optimizer.step()
 
             epoch_loss += loss.item()
             progress_bar.set_postfix(loss=loss.item())
 
-        print(f"Epoch {epoch + 1} Complete. Avg Loss: {epoch_loss / len(train_loader):.4f}")
+        # Step the learning decay function tracking algorithm
+        scheduler.step()
+
+        avg_epoch_loss = epoch_loss / len(train_loader)
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"📉 Epoch {epoch + 1} Complete | Avg CTC Loss: {avg_epoch_loss:.4f} | Active LR: {current_lr:.6f}")
+
+        # Periodic Live Trace Preview Module
+        model.eval()
+        with torch.no_grad():
+            test_img, test_lbl, _ = train_ds[0]
+            if torch.sum(test_img) > 0:
+                sample_tensor = test_img.unsqueeze(0).to(device)
+                sample_preds = model(sample_tensor)
+                best_path = torch.argmax(sample_preds, dim=2).squeeze(0).cpu().numpy()
+                active_tokens = [tok for tok in best_path if tok != 0]
+                decoded_sample = encoder.decode(best_path)
+
+                print(f"   🔍 Live Training Trace Pass:")
+                print(f"      ├─ Target True Label text: '{encoder.decode(test_lbl.numpy())}'")
+                print(f"      ├─ Active Predicted Path Token Indices Vector: {active_tokens}")
+                print(f"      └── Model Decoded Text Prediction Output:  ➡️ '{decoded_sample}'\n")
+
+        # Save model state weights per tracking milestone checkpoints safely
         torch.save(model.state_dict(), MODEL_SAVE_PATH)
+
+    print("🏁 Optimized model training complete! Fine-tuned weights exported successfully.")
 
 
 if __name__ == "__main__":
