@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from datetime import datetime
 from st_supabase_connection import SupabaseConnection
+from pdf2image import convert_from_bytes  # <-- Integrated for PDF rasterization support
 
 # Avoid relative import breakages by dynamically adding scripts path to system environment
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -136,13 +137,33 @@ class OCRReaderPipeline:
 
     def process_image(self, image_input, true_label=None):
         """
-        Hybrid Vector Handler parsing file string paths OR binary web buffers
+        Hybrid Vector Handler parsing file string paths OR binary web buffers (Images and PDFs)
         """
+        raw_img = None
+
         if isinstance(image_input, str):
             raw_img = cv2.imread(image_input, cv2.IMREAD_GRAYSCALE)
         else:
-            file_bytes = np.asarray(bytearray(image_input.read()), dtype=np.uint8)
-            raw_img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+            filename = getattr(image_input, 'name', '').lower()
+
+            # ROUTER: If the uploaded document is a PDF, rasterize page 1 into pixels
+            if filename.endswith('.pdf'):
+                pdf_bytes = image_input.read()
+                # Reset stream pointer just in case it's used elsewhere
+                image_input.seek(0)
+                pil_pages = convert_from_bytes(pdf_bytes)
+
+                if len(pil_pages) > 0:
+                    # Target page 1, translate RGB canvas to a grayscale matrix for U-Net
+                    rgb_page = np.array(pil_pages[0])
+                    raw_img = cv2.cvtColor(rgb_page, cv2.COLOR_RGB2GRAY)
+                else:
+                    raise ValueError("The uploaded PDF contains no processable pages.")
+            else:
+                # Traditional Image stream parsing logic via NumPy decoders
+                file_bytes = np.asarray(bytearray(image_input.read()), dtype=np.uint8)
+                image_input.seek(0)
+                raw_img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
 
         if raw_img is None:
             raise ValueError("File content empty or corrupt array stream presented.")
@@ -301,7 +322,8 @@ def main():
             # --- COMPUTER VISION ACCELERATED INFERENCE CORE ---
             st.divider()
             st.subheader("Clinical Data Upload")
-            uploaded_file = st.file_uploader("Upload Patient Report", type=["pdf", "png", "jpg"])
+            # PDF added seamlessly alongside PNG/JPG vectors
+            uploaded_file = st.file_uploader("Upload Patient Report", type=["pdf", "png", "jpg", "jpeg"])
 
             if uploaded_file is not None:
                 st.sidebar.success("📦 Scanned file buffered successfully!")
