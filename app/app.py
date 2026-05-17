@@ -1,3 +1,8 @@
+import warnings
+# 🤫 CRUCIAL: Suppress deprecation prints at the compiler level before importing Streamlit
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import streamlit as st
 import os
 import sys
@@ -17,12 +22,6 @@ import numpy as np
 from datetime import datetime
 from st_supabase_connection import SupabaseConnection
 from pdf2image import convert_from_bytes
-
-# 🤫 SILENT LOG FILTER ROOM: Prevent background system warning loops from spamming the console
-import warnings
-
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Avoid relative import breakages by dynamically adding scripts path to system environment
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -420,8 +419,8 @@ def main():
                         st.text_area("Extracted Context Matrix", results["ocr_text"])
 
                     with tab_mask:
-                        # 🌟 FIXED: Updated use_column_width from boolean to standard string "always" to quiet layout warnings
-                        st.image(results["mask_preview"], caption="U-Net Segmented Mask", use_column_width="always")
+                        # 🎯 FIXED: Replaced 'use_column_width="always"' with standard 'use_container_width=True'
+                        st.image(results["mask_preview"], caption="U-Net Segmented Mask", use_container_width=True)
 
                 except Exception as eval_err:
                     st.sidebar.error(f"Inference Failure: {eval_err}")
