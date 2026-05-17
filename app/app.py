@@ -310,7 +310,7 @@ class OCRReaderPipeline:
 
             # 🛠️ CALIBRATION 2: Set to True if your model weights require zero-centered [-1.0, 1.0] inputs.
             # Set to False if your model expects a raw [0.0, 1.0] value distribution scale.
-            USE_ZERO_CENTERED_SCALE = True
+            USE_ZERO_CENTERED_SCALE = False
             # ====================================================================
 
             for ctr in valid_contours:
