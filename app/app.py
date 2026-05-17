@@ -151,7 +151,7 @@ class MedicalCRNN(nn.Module):
         b, c, h, w = x.size()
         x = x.view(b, w, c * h)
         x, _ = self.rnn(x)
-        x = self.fc(x)
+        x = x.fc(x)
         return x.log_softmax(2)
 
 
@@ -407,7 +407,8 @@ def main():
                         st.text_area("Extracted Context Matrix", results["ocr_text"])
 
                     with tab_mask:
-                        st.image(results["mask_preview"], caption="U-Net Segmented Mask", use_column_width=True)
+                        # 🌟 FIX: Updated use_column_width from boolean to standard string "always"
+                        st.image(results["mask_preview"], caption="U-Net Segmented Mask", use_column_width="always")
 
                 except Exception as eval_err:
                     st.sidebar.error(f"Inference Failure: {eval_err}")
