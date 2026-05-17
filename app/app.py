@@ -294,8 +294,11 @@ class OCRReaderPipeline:
                 if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
                     continue
 
-                # Enforce safe zero-padding letterboxing to prevent interpolation distortion
+                # Enforce safe zero-padding letterboxing
                 target_w, target_h = 256, 64
+
+                # 🧪 COLOR-SPACE SWITCH MATRIX: Align background layout with your training baseline
+                # If your CRNN expects light characters on a dark canvas, change to: np.zeros(...)
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255
 
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
@@ -303,19 +306,27 @@ class OCRReaderPipeline:
                 nh = int(line_crop.shape[0] * scale)
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
+
+                # If your CRNN expects dark text but your line_crop is inverted, or vice versa, invert here:
+                # resized_crop = cv2.bitwise_not(resized_crop)
+
                 crnn_input[0:nh, 0:nw] = resized_crop
 
-                # Normalize float values explicitly to range [0.0, 1.0]
-                crnn_input = crnn_input.astype(np.float32) / 255.0
+                # Normalize float values explicitly to standard range [0.0, 1.0]
+                crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
 
-                # Convert matrix cleanly to 4D Torch Tensor
+                # 🧪 DYNAMIC RANGE SWITCH MATRIX: Zero-Center the distribution array if required
+                # Uncomment the line below if your weights were trained on a [-1.0, 1.0] distribution
+                crnn_input = (crnn_input - 0.5) / 0.5
+
+                # Convert matrix cleanly to 4D Torch Tensor: [Batch, Channel, Height, Width]
                 crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
                 crnn_tensor = crnn_tensor.unsqueeze(0).unsqueeze(0)
 
                 with torch.no_grad():
                     preds = self.text_recognizer(crnn_tensor)
 
-                    # 🎯 FIXED: Axis permutation engine switches shape layout to Batch-First if needed
+                    # Axis permutation engine switches shape layout to Batch-First if needed
                     raw_shape = list(preds.shape)
                     if raw_shape[0] != 1 and raw_shape[1] == 1:
                         preds = preds.permute(1, 0, 2)
@@ -332,7 +343,7 @@ class OCRReaderPipeline:
                     if len(decoded_line) > 1 and decoded_line.lower() != "nee":
                         final_text_lines.append(decoded_line)
 
-            # 🎯 FIXED: Fallback text handler supplies safe mock tags if strings trace empty
+            # Fallback text handler supplies safe mock tags if strings trace empty
             if not final_text_lines:
                 ocr_text_output = "Amoxicillin 500mg Paracetamol"
                 mask_status_log += " | ⚠️ CRNN Character Vector Reading Empty -> Fired Text Placeholder"
@@ -516,6 +527,8 @@ def main():
 
                         st.sidebar.success("🎯 Analysis Complete!")
 
+                        st.session_state.extracted_file_text = Antiquoted if results["ocr_text"] else results[
+                            "ocr_text"]
                         st.session_state.extracted_file_text = results["ocr_text"]
                         st.session_state.cached_mask_preview = results["mask_preview"].copy()
                         st.session_state.mask_execution_log = results["mask_status"]
