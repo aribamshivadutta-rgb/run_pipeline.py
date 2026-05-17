@@ -220,11 +220,11 @@ class OCRReaderPipeline:
                 mask_output = self.detector(img_tensor)
                 mask = (mask_output.squeeze().cpu().numpy() > 0.5).astype(np.uint8) * 255
 
-        # STEP 2: Advanced Row Slicing & Character Recognition Sequence (OpenCV Vector Alignment Fixed)
+        # STEP 2: Advanced Row Slicing & Character Recognition Sequence
         final_text_lines = []
 
         if self.text_recognizer is not None:
-            # 🛡️ Cast mask array explicitly to standard uint8 elements
+            # Cast mask array explicitly to standard uint8 elements
             resized_mask = cv2.resize(mask, (w, h)).astype(np.uint8)
 
             # Extract coordinates for segmented text paths
@@ -240,7 +240,7 @@ class OCRReaderPipeline:
             if len(valid_contours) > 0:
                 valid_contours = sorted(valid_contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
             else:
-                # Fallback layout bounding matrix if segments trace empty
+                # 🎯 FIXED: Hard-cast fallback coordinate vector to explicit 3D int32 array for OpenCV safety
                 valid_contours = [np.array([[[0, 0]], [[0, h]], [[w, h]], [[w, 0]]], dtype=np.int32)]
 
             for ctr in valid_contours:
@@ -450,12 +450,13 @@ def main():
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
+                        # 🎯 FIXED: Swapped out deprecated use_container_width constraints for width="stretch" standard
                         if st.session_state.cached_mask_preview is not None:
                             st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions",
-                                     use_container_width=True)
+                                     width="stretch")
                         else:
                             st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Mask Cache Empty",
-                                     use_container_width=True)
+                                     width="stretch")
 
     # --- MAIN ENGINE DIALOGUE AREA ---
     st.title("💬 AI Health Assistant")
