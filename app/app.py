@@ -305,7 +305,7 @@ class OCRReaderPipeline:
             # ====================================================================
             # STEP 2 CALIBRATION CONTROLS (CRNN WEIGHT ALIGNMENT MATRIX)
             # ====================================================================
-            EXPECTS_DARK_TEXT = True
+            EXPECTS_DARK_TEXT = False
             USE_ZERO_CENTERED_SCALE = False
             # ====================================================================
 
