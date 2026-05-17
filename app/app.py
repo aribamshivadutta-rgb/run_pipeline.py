@@ -306,11 +306,11 @@ class OCRReaderPipeline:
             # ====================================================================
             # 🛠️ CALIBRATION 1: Set to True if your CRNN expects dark text on white sheets.
             # Set to False if your CRNN expects bright white characters on a dark backdrop.
-            EXPECTS_DARK_TEXT = True
+            EXPECTS_DARK_TEXT = False
 
             # 🛠️ CALIBRATION 2: Set to True if your model weights require zero-centered [-1.0, 1.0] inputs.
             # Set to False if your model expects a raw [0.0, 1.0] value distribution scale.
-            USE_ZERO_CENTERED_SCALE = False
+            USE_ZERO_CENTERED_SCALE = True
             # ====================================================================
 
             for ctr in valid_contours:
