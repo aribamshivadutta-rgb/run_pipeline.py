@@ -341,12 +341,11 @@ class OCRReaderPipeline:
                 bg_color = int(np.median(line_crop)) if line_crop.size > 0 else 255
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_color
 
-                # 🎯 FIXED: Enforce horizontal aspect ratio lock to stop text squashing
+                # 🎯 FIXED: Aspect ratio lock calculation prevents letter stretching
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
                 nw = max(4, int(line_crop.shape[1] * scale))
                 nh = max(4, int(line_crop.shape[0] * scale))
 
-                # Safe bounding container cap ensures no memory index overflow errors
                 if nw > target_w: nw = target_w
                 if nh > target_h: nh = target_h
 
@@ -355,7 +354,7 @@ class OCRReaderPipeline:
                 if EXPECTS_DARK_TEXT:
                     resized_crop = cv2.bitwise_not(resized_crop)
 
-                # Paste proportionally without changing geometric letter spacing dimensions
+                # Paste proportionally onto the canvas matrix safely
                 crnn_input[0:nh, 0:nw] = resized_crop
 
                 if len(debug_crops_pool) < 4:
