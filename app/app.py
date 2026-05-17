@@ -11,11 +11,12 @@ import hashlib
 import random
 import uuid
 import torch
+import torch.nn as nn  # <-- Added explicitly for native layer definitions
 import cv2
 import numpy as np
 from datetime import datetime
 from st_supabase_connection import SupabaseConnection
-from pdf2image import convert_from_bytes  # <-- Integrated for PDF rasterization support
+from pdf2image import convert_from_bytes
 
 # Avoid relative import breakages by dynamically adding scripts path to system environment
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,6 +48,7 @@ LEARNED_DATA_FILE = os.path.join(RAW_DIR, "learned_user_data.csv")
 
 # Computer Vision Network Weights
 DETECTOR_WEIGHTS = os.path.join(MODEL_DIR, "medical_detector.pth")
+CRNN_WEIGHTS = os.path.join(MODEL_DIR, "MedicalCRNN_v1.pth")  # <-- Native Weights Mapping
 TRAFFIC_ROUTER_WEIGHTS = os.path.join(MODEL_DIR, "MedicalTrafficRouter_v1.pkl")
 TRAFFIC_VECTORIZER_WEIGHTS = os.path.join(MODEL_DIR, "MedicalTrafficRouter_v1_vectorizer.pkl")
 
@@ -112,12 +114,53 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CRNN ALIGNED)
 # ====================================================================
+class MedicalLabelEncoder:
+    def __init__(self):
+        self.chars = " %()-./012345678?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        self.char_to_num = {char: i + 1 for i, char in enumerate(self.chars)}
+        self.num_to_char = {i + 1: char for i, char in enumerate(self.chars)}
+
+    def decode(self, nums):
+        res = []
+        for i, num in enumerate(nums):
+            if num != 0 and (i == 0 or num != nums[i - 1]):
+                res.append(self.num_to_char.get(num, ""))
+        return "".join(res)
+
+    @property
+    def vocab_size(self):
+        return len(self.chars) + 1
+
+
+class MedicalCRNN(nn.Module):
+    def __init__(self, vocab_size):
+        super(MedicalCRNN, self).__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(1, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(256, 256, 3, padding=1), nn.ReLU(), nn.MaxPool2d((2, 1))
+        )
+        self.rnn = nn.LSTM(2048, 256, bidirectional=True, num_layers=2, batch_first=True)
+        self.fc = nn.Linear(512, vocab_size)
+
+    def forward(self, x):
+        x = self.cnn(x)
+        b, c, h, w = x.size()
+        x = x.view(b, w, c * h)
+        x, _ = self.rnn(x)
+        x = self.fc(x)
+        return x.log_softmax(2)
+
+
 class OCRReaderPipeline:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.detector = None
+        self.text_recognizer = None
+        self.encoder = MedicalLabelEncoder()
         self.router = None
         self.vectorizer = None
         self.load_models()
@@ -130,7 +173,13 @@ class OCRReaderPipeline:
                 self.detector.load_state_dict(torch.load(DETECTOR_WEIGHTS, map_location=self.device))
             self.detector.eval()
 
-        # 2. Extract Traffic Controller Serializations
+        # 2. Build and Initialize Native MedicalCRNN Architecture
+        self.text_recognizer = MedicalCRNN(self.encoder.vocab_size).to(self.device)
+        if os.path.exists(CRNN_WEIGHTS):
+            self.text_recognizer.load_state_dict(torch.load(CRNN_WEIGHTS, map_location=self.device))
+        self.text_recognizer.eval()
+
+        # 3. Extract Traffic Controller Serializations
         if os.path.exists(TRAFFIC_ROUTER_WEIGHTS) and os.path.exists(TRAFFIC_VECTORIZER_WEIGHTS):
             self.router = joblib.load(TRAFFIC_ROUTER_WEIGHTS)
             self.vectorizer = joblib.load(TRAFFIC_VECTORIZER_WEIGHTS)
@@ -146,27 +195,26 @@ class OCRReaderPipeline:
         else:
             filename = getattr(image_input, 'name', '').lower()
 
-            # ROUTER: If the uploaded document is a PDF, rasterize page 1 into pixels
             if filename.endswith('.pdf'):
                 pdf_bytes = image_input.read()
-                # Reset stream pointer just in case it's used elsewhere
                 image_input.seek(0)
                 pil_pages = convert_from_bytes(pdf_bytes)
 
                 if len(pil_pages) > 0:
-                    # Target page 1, translate RGB canvas to a grayscale matrix for U-Net
                     rgb_page = np.array(pil_pages[0])
                     raw_img = cv2.cvtColor(rgb_page, cv2.COLOR_RGB2GRAY)
                 else:
                     raise ValueError("The uploaded PDF contains no processable pages.")
             else:
-                # Traditional Image stream parsing logic via NumPy decoders
                 file_bytes = np.asarray(bytearray(image_input.read()), dtype=np.uint8)
                 image_input.seek(0)
                 raw_img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
 
         if raw_img is None:
             raise ValueError("File content empty or corrupt array stream presented.")
+
+        # Save an isolation copy for CRNN text compilation before resizing to U-Net proportions
+        img_for_crnn = raw_img.copy()
 
         h, w = raw_img.shape
         img_input = cv2.resize(raw_img, (512, 512)) / 255.0
@@ -179,14 +227,27 @@ class OCRReaderPipeline:
                 mask_output = self.detector(img_tensor)
                 mask = (mask_output.squeeze().cpu().numpy() > 0.5).astype(np.uint8) * 255
 
-        # STEP 2: Structural Character Recognition (CRNN Core Text Layer)
-        ocr_text_output = "Amoxicillin 500mg"
+        # STEP 2: Structural Character Recognition (Live Custom CRNN Alignment)
+        ocr_text_output = ""
+        if self.text_recognizer is not None:
+            # Replicate custom MedicalDataset transformations exactly
+            crnn_input = cv2.resize(img_for_crnn, (256, 64))
+            crnn_input = (crnn_input / 255.0 - 0.5) / 0.5
+            crnn_tensor = torch.from_numpy(crnn_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
+
+            with torch.no_grad():
+                preds = self.text_recognizer(crnn_tensor)
+                best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
+                ocr_text_output = self.encoder.decode(best_path).strip()
+
+        if not ocr_text_output:
+            ocr_text_output = "No readable text extracted."
 
         # STEP 3: Compute Linear Vector Routing (LightGBM Decision Matrix)
         category_label = "Prescription/Symptom"
         confidence_score = 100.0
 
-        if self.router and self.vectorizer:
+        if self.router and self.vectorizer and ocr_text_output != "No readable text extracted.":
             vec_text = self.vectorizer.transform([ocr_text_output])
             pred_label = self.router.predict(vec_text)[0]
             confidence_score = np.max(self.router.predict_proba(vec_text)) * 100
@@ -322,7 +383,6 @@ def main():
             # --- COMPUTER VISION ACCELERATED INFERENCE CORE ---
             st.divider()
             st.subheader("Clinical Data Upload")
-            # PDF added seamlessly alongside PNG/JPG vectors
             uploaded_file = st.file_uploader("Upload Patient Report", type=["pdf", "png", "jpg", "jpeg"])
 
             if uploaded_file is not None:
@@ -336,6 +396,9 @@ def main():
                         results = st.session_state.ocr_pipeline.process_image(uploaded_file, true_label=0)
 
                     st.sidebar.success("🎯 Analysis Complete!")
+
+                    # Intercept extracted dynamic CRNN array text and bind to system conversation memory bank
+                    st.session_state.extracted_file_text = results["ocr_text"]
 
                     tab_metrics, tab_mask = st.sidebar.tabs(["Analysis", "U-Net Mask"])
                     with tab_metrics:
@@ -361,6 +424,26 @@ def main():
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
+
+    # Automated Pipeline Interceptor Hook: Evaluates text extracted via side uploads
+    if 'extracted_file_text' in st.session_state and st.session_state.extracted_file_text:
+        ocr_payload = st.session_state.extracted_file_text
+        del st.session_state['extracted_file_text']  # Evacuate index payload to break runtime loop states
+
+        st.session_state.messages.append({"role": "user", "content": f"📋 *[Uploaded Report Data]:* {ocr_payload}"})
+
+        bot = st.session_state.bot
+        disease, matched, conf = bot.predict(ocr_payload)
+
+        if matched:
+            response_text = f"⚙️ **Automated Report Diagnostics Active:**\n\n" \
+                            f"**Suspected Diagnosis:** {disease.upper()} ({conf:.1f}% confidence)\n" \
+                            f"\n**Extracted Matching Features:** {', '.join(matched).replace('_', ' ')}"
+        else:
+            response_text = f"I detected '{ocr_payload}' in the document, but I couldn't map it cleanly to known symptoms in my classification database."
+
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+        st.rerun()
 
     if prompt := st.chat_input("Enter symptoms (e.g. fever, headache)..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
