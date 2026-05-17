@@ -114,7 +114,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CRNN FIX ALIGNED)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (CONTOUR RE-ENGINEERED)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -209,31 +209,62 @@ class OCRReaderPipeline:
 
         img_for_crnn = raw_img.copy()
 
+        # STEP 1: Execute Deep Feature Extraction (U-Net Line Segmentation)
         h, w = raw_img.shape
         img_input = cv2.resize(raw_img, (512, 512)) / 255.0
         img_tensor = torch.from_numpy(img_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
 
-        # STEP 1: Execute Deep Feature Extraction (U-Net)
         mask = np.zeros((512, 512), dtype=np.uint8)
         if self.detector is not None:
             with torch.no_grad():
                 mask_output = self.detector(img_tensor)
                 mask = (mask_output.squeeze().cpu().numpy() > 0.5).astype(np.uint8) * 255
 
-        # STEP 2: Structural Character Recognition (Precision PyTorch Normalization Match)
-        ocr_text_output = ""
+        # STEP 2: Advanced Row Slicing & Character Recognition Sequence
+        final_text_lines = []
+
         if self.text_recognizer is not None:
-            crnn_input = cv2.resize(img_for_crnn, (256, 64))
-            crnn_input = crnn_input.astype(np.float32) / 255.0
-            crnn_input = (crnn_input - 0.5) / 0.5
-            crnn_tensor = torch.from_numpy(crnn_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
+            # Resize mask back to original image proportions to find exact text row contours
+            resized_mask = cv2.resize(mask, (w, h))
 
-            with torch.no_grad():
-                preds = self.text_recognizer(crnn_tensor)
-                best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
-                ocr_text_output = self.encoder.decode(best_path).strip()
+            # Find coordinates of all text lines detected by the U-Net mask
+            contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        if not ocr_text_output:
+            # Sort contours from top to bottom so it reads the prescription in order
+            contours = sorted(contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
+
+            if len(contours) == 0:
+                # Fallback to full-page crop if no lines were segmented
+                contours = [[[0, 0], [0, h], [w, h], [w, 0]]]
+
+            for ctr in contours:
+                x, y, cw, ch = cv2.boundingRect(ctr)
+
+                # Filter out tiny pixel noise blocks or random dots
+                if cw < 20 or ch < 10:
+                    continue
+
+                # Crop out the individual horizontal text row strip
+                line_crop = img_for_crnn[y:y + ch, x:x + cw]
+
+                # Format the single line crop cleanly for the CRNN LSTM input matrix
+                crnn_input = cv2.resize(line_crop, (256, 64))
+                crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
+                crnn_input = (crnn_input - 0.5) / 0.5
+                crnn_tensor = torch.from_numpy(crnn_input).unsqueeze(0).unsqueeze(0).float().to(self.device)
+
+                with torch.no_grad():
+                    preds = self.text_recognizer(crnn_tensor)
+                    best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
+                    decoded_line = self.encoder.decode(best_path).strip()
+                    if decoded_line:
+                        final_text_lines.append(decoded_line)
+
+            ocr_text_output = " \n ".join(final_text_lines)
+        else:
+            ocr_text_output = "No readable text extracted."
+
+        if not ocr_text_output.strip():
             ocr_text_output = "No readable text extracted."
 
         # STEP 3: Compute Linear Vector Routing (LightGBM Decision Matrix)
@@ -246,7 +277,6 @@ class OCRReaderPipeline:
             confidence_score = np.max(self.router.predict_proba(vec_text)) * 100
             category_label = "Prescription/Symptom" if pred_label == 0 else "Lab Report"
 
-        # STEP 4: Accuracy Compilation
         accuracy = None
         if true_label is not None and self.router:
             accuracy = 100.0 if pred_label == true_label else 0.0
@@ -316,7 +346,6 @@ class MedicalAI:
                 input_dict[m[0]] = 1
                 matched.append(m[0])
             else:
-                # 🌟 FIXED: Changed typo from curly brace '}' to colon ':' to restore loop functionality
                 for k in self.known_symptoms:
                     if t in k.replace("_", " "):
                         input_dict[k] = 1
@@ -415,11 +444,12 @@ def main():
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
-                        # 🌟 FIXED: Render the dynamically cached live array instead of an empty black block
                         if st.session_state.cached_mask_preview is not None:
-                            st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions", use_container_width=True)
+                            st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions",
+                                     use_container_width=True)
                         else:
-                            st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Mask Cache Empty", use_container_width=True)
+                            st.image(np.zeros((512, 512), dtype=np.uint8), caption="U-Net Mask Cache Empty",
+                                     use_container_width=True)
 
     # --- MAIN ENGINE DIALOGUE AREA ---
     st.title("💬 AI Health Assistant")
