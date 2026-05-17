@@ -130,6 +130,7 @@ class MedicalLabelEncoder:
     def decode(self, nums):
         res = []
         for i, num in enumerate(nums):
+            # Safe parsing maps adjacent duplicate predictions properly
             if num != 0 and (i == 0 or num != nums[i - 1]):
                 res.append(self.num_to_char.get(num, ""))
         return "".join(res)
@@ -235,7 +236,7 @@ class OCRReaderPipeline:
                 dynamic_threshold = 0.5 if max_activation > 0.5 else (max_activation * 0.7)
                 mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
 
-        # --- STEP 2: Adaptive Document Segmentation Sequence (CRNN Layout Alignment) ---
+        # --- STEP 2: Adaptive Document Segmentation Sequence (CRNN Alignment) ---
         final_text_lines = []
         mask_status_log = "⚠️ Neural Network Weights Uninitialized or Not Found"
 
@@ -294,18 +295,33 @@ class OCRReaderPipeline:
                 if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
                     continue
 
-                # ✅ FIXED: Force strict mapping to 4D [Batch, Channel, Height, Width] sequence parameters
-                crnn_input = cv2.resize(line_crop, (256, 64))
-                crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
+                # ✅ FIXED: Enforce safe zero-padding letterboxing to prevent interpolation distortion
+                target_w, target_h = 256, 64
+                crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255  # Clean white sheet baseline
 
+                # Aspect ratio scaling calculation
+                scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
+                nw = int(line_crop.shape[1] * scale)
+                nh = int(line_crop.shape[0] * scale)
+
+                resized_crop = cv2.resize(line_crop, (nw, nh))
+                crnn_input[0:nh, 0:nw] = resized_crop  # Embed natively inside upper-left bounds
+
+                # Normalize float values explicitly to range [0.0, 1.0]
+                crnn_input = crnn_input.astype(np.float32) / 255.0
+
+                # Convert matrix cleanly to 4D Torch Tensor: [Batch, Channel, Height, Width]
                 crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
                 crnn_tensor = crnn_tensor.unsqueeze(0).unsqueeze(0)
 
                 with torch.no_grad():
                     preds = self.text_recognizer(crnn_tensor)
+
+                    # Target axis evaluation sequence: squeeze and extract predictions
                     best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
                     decoded_line = self.encoder.decode(best_path).strip()
 
+                    # Avoid capturing empty fragments or broken default labels
                     if len(decoded_line) > 1 and decoded_line.lower() != "nee":
                         final_text_lines.append(decoded_line)
 
@@ -367,7 +383,6 @@ class MedicalAI:
             except Exception as e:
                 print(f"Soft Initialization Layer Warning: {e}")
         else:
-            # Set healthy baseline placeholders so 'verify now' command can run safely
             self.known_symptoms = ["fever", "cough", "headache", "fatigue", "vomiting"]
             self.known_diseases = ["influenza", "common cold"]
 
