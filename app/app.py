@@ -294,10 +294,8 @@ class OCRReaderPipeline:
                 if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
                     continue
 
-                # 🛠️ SHAPE TUNING LAYER: Enforce safe zero-padded letterboxing configuration
+                # Enforce safe letterboxing layout definitions
                 target_w, target_h = 256, 64
-
-                # CHOOSE BACKGROUND STATE: Use 255 for dark text sheets, or change to 0 for light text sheets
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255
 
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
@@ -306,15 +304,17 @@ class OCRReaderPipeline:
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
 
-                # INVERSION TOGGLE: If characters are reading inverse to training parameters, uncomment below:
+                # 🛠️ CALIBRATION TOGGLE 1 (COLOR-SPACE INVERSION):
+                # Uncomment the line below if your CRNN model weights expect dark text on light backgrounds
                 # resized_crop = cv2.bitwise_not(resized_crop)
 
                 crnn_input[0:nh, 0:nw] = resized_crop
 
-                # 🛠️ VALUE SCALE TUNING LAYER: Convert explicitly to float arrays
+                # Cast matrix arrays safely over to float representations
                 crnn_input = crnn_input.astype(np.float32) / 255.0
 
-                # ZERO-CENTER TOGGLE: If weights expect zero-centered scales [-1.0, 1.0], uncomment below:
+                # 🛠️ CALIBRATION TOGGLE 2 (ZERO-CENTERED NORMALIZATION DISTRIBUTION):
+                # Uncomment the line below if your weights were trained using a [-1.0, 1.0] range scale
                 # crnn_input = (crnn_input - 0.5) / 0.5
 
                 # Convert matrix cleanly to 4D Torch Tensor: [Batch, Channel, Height, Width]
