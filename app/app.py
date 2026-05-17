@@ -156,7 +156,6 @@ class MedicalCRNN(nn.Module):
         )
         self.hidden_size = 256
         self.num_layers = 2
-        # Aligned to exact shape layout structure expected by fresh weights [1024, 2048]
         self.rnn = nn.LSTM(input_size=2048, hidden_size=self.hidden_size, num_layers=self.num_layers,
                            bidirectional=True, batch_first=True)
         self.fc = nn.Linear(self.hidden_size * 2, vocab_size)
@@ -168,7 +167,6 @@ class MedicalCRNN(nn.Module):
         features = features.view(b, c * h, w)
         features = features.permute(0, 2, 1)
 
-        # Explicit state passing handles zeroed cell frameworks securely
         rnn_out, _ = self.rnn(features, hx)
         logits = self.fc(rnn_out)
         return logits.log_softmax(2)
@@ -202,7 +200,6 @@ class OCRReaderPipeline:
                 sanitized_state_dict[clean_key] = v
 
             try:
-                # Synchronized structural parameters enable strict graph verification
                 self.text_recognizer.load_state_dict(sanitized_state_dict, strict=True)
             except Exception as load_err:
                 print(f"[MODEL RESILIENCE FALLBACK]: Reverting strict layer binding pass: {load_err}")
@@ -296,7 +293,6 @@ class OCRReaderPipeline:
 
             if is_macro_solid_canvas:
                 mask_status_log += " | ⚡ Running Native Proportional Grid Quadrant Slicer"
-                # 🎯 GEOMETRY FIX: High-aspect column slicer stops character resolution squashing
                 slice_h = int(h * 0.08)
                 slice_w = int(w * 0.50)
                 stride_step = int(slice_h * 0.60)
@@ -327,23 +323,18 @@ class OCRReaderPipeline:
                 cv2.rectangle(preview_canvas, (bx, by), (bx + bw, by + bh), (255), thickness=-1)
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
-            # ====================================================================
-            # POLARITY MATRICES SYNC
-            # ====================================================================
             if preset_mode == "Inverted Light Background":
                 EXPECTS_DARK_TEXT = False
                 USE_ZERO_CENTERED_SCALE = False
             elif preset_mode == "High-Contrast Document (Zero-Centered)":
-                # 🎯 CALIBRATED SYNCHRONIZATION PROFILE (DEFAULT OPTIMAL TARGET)
-                EXPECTS_DARK_TEXT = False  # Keeps background clean light (255)
-                USE_ZERO_CENTERED_SCALE = True  # Compresses floating range values between [-1.0, 1.0]
+                EXPECTS_DARK_TEXT = False
+                USE_ZERO_CENTERED_SCALE = True
             elif preset_mode == "Standard PyTorch (Centered)":
                 EXPECTS_DARK_TEXT = True
                 USE_ZERO_CENTERED_SCALE = True
             else:
                 EXPECTS_DARK_TEXT = True
                 USE_ZERO_CENTERED_SCALE = False
-            # ====================================================================
 
             for (x, y, cw, ch) in line_bounding_boxes:
                 pad_y1 = max(0, y - 1)
@@ -356,7 +347,6 @@ class OCRReaderPipeline:
                 if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
                     continue
 
-                # Apply binarization profiles dynamically based on ink expectations
                 if EXPECTS_DARK_TEXT:
                     if np.mean(line_crop) > 127:
                         _, line_crop = cv2.threshold(line_crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -369,8 +359,6 @@ class OCRReaderPipeline:
                         _, line_crop = cv2.threshold(line_crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
                 target_w, target_h = 256, 64
-
-                # Default background canvas padding scales with baseline ink configuration profiles
                 bg_pad_val = 0 if EXPECTS_DARK_TEXT else 255
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_pad_val
 
@@ -395,28 +383,41 @@ class OCRReaderPipeline:
                 if USE_ZERO_CENTERED_SCALE:
                     crnn_input = (crnn_input - 0.5) / 0.5
 
-                crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
-                crnn_tensor = crnn_tensor.unsqueeze(0).unsqueeze(0)
+                crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device).unsqueeze(0).unsqueeze(0)
 
                 with torch.no_grad():
-                    # 🎯 INIT PASS FIX: Zeroed hidden state parameters protect recurrent cell timelines
                     num_directions = 2
                     h0 = torch.zeros(self.text_recognizer.num_layers * num_directions, 1,
                                      self.text_recognizer.hidden_size).to(self.device)
                     c0 = torch.zeros(self.text_recognizer.num_layers * num_directions, 1,
                                      self.text_recognizer.hidden_size).to(self.device)
 
-                    preds = self.text_recognizer(crnn_tensor, (h0, c0))
+                    logits = self.text_recognizer(crnn_tensor, (h0, c0))
 
-                    raw_shape = list(preds.shape)
-                    if raw_shape[0] != 1 and raw_shape[1] == 1:
-                        preds = preds.permute(1, 0, 2)
+                    if list(logits.shape)[0] != 1 and list(logits.shape)[1] == 1:
+                        logits = logits.permute(1, 0, 2)
 
-                    best_path = torch.argmax(preds, dim=2).squeeze(0).cpu().numpy()
+                    # 🎯 COMPUTE LIVE MATRIX CONFIDENCE SCORES
+                    probs = torch.exp(logits).squeeze(0)
+                    best_path = torch.argmax(logits, dim=2).squeeze(0).cpu().numpy()
+
+                    path_probs = probs[torch.arange(probs.size(0)), best_path].cpu().numpy()
+                    line_confidence = float(np.mean(path_probs)) * 100
+                    active_tokens = [int(idx) for idx in best_path if idx != 0]
                     decoded_line = self.encoder.decode(best_path).strip()
 
-                    if len(decoded_line) > 2 and decoded_line.lower() != "nee":
+                    if len(decoded_line) > 1:
                         final_text_lines.append(decoded_line)
+
+                        if "line_diagnostics" not in st.session_state:
+                            st.session_state.line_diagnostics = []
+                        if len(st.session_state.line_diagnostics) < 4:
+                            st.session_state.line_diagnostics.append({
+                                "text": decoded_line,
+                                "confidence": f"{line_confidence:.2f}%",
+                                "raw_tokens": list(best_path[:15]),
+                                "active_indices": active_tokens
+                            })
 
             if not final_text_lines:
                 ocr_text_output = "No text extracted from report blocks."
@@ -587,6 +588,9 @@ def main():
                 if st.session_state.last_processed_file_hash != file_hash:
                     st.sidebar.success("📦 Scanned file buffered successfully!")
 
+                    if "line_diagnostics" in st.session_state:
+                        del st.session_state.line_diagnostics
+
                     if 'ocr_pipeline' not in st.session_state:
                         st.session_state.ocr_pipeline = OCRReaderPipeline()
 
@@ -635,6 +639,27 @@ def main():
                                      caption="Target Contour Segmentation Preview Canvas", use_container_width=True)
 
                     with tab_debug:
+                        st.subheader("🔬 Neural Layer Verification Dashboard")
+                        run_deep_inspection = st.toggle("Enable Deep Tensor Inspection", value=True)
+
+                        if run_deep_inspection and "line_diagnostics" in st.session_state:
+                            st.success("🟢 CRNN Status: Graph Active & Responding")
+
+                            for idx, diag in enumerate(st.session_state.line_diagnostics):
+                                with st.expander(f"📋 Line Vector Trace Run #{idx + 1}: '{diag['text']}'"):
+                                    st.metric("Sequence Confidence", diag["confidence"])
+
+                                    if len(diag["active_indices"]) == 0:
+                                        st.error("⚠️ Status: Saturated / Flatlined on Blank Tokens")
+                                    elif diag["text"].lower() == "nee":
+                                        st.warning("⚠️ Status: Locked onto Default Index Bias")
+                                    else:
+                                        st.success("🎯 Status: Healthy Character Variance Detected")
+
+                                    st.text(f"Raw Token Path Vector (Truncated):\n{diag['raw_tokens']}...")
+                                    st.text(f"Non-Zero Character Map Indices:\n{diag['active_indices']}")
+
+                        st.divider()
                         st.caption("🔍 Visual Debugger: Real crops entering model neural filters:")
                         crops = st.session_state.get("debug_crops", [])
                         if crops:
