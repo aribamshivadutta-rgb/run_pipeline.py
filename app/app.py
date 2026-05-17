@@ -20,7 +20,12 @@ from pdf2image import convert_from_bytes
 
 # Avoid relative import breakages by dynamically adding scripts path to system environment
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(CURRENT_SCRIPT_DIR)
+# 🎯 FIXED: Correctly isolate parent directory path if runtime executes from a script file wrapper string
+if CURRENT_SCRIPT_DIR.endswith('.py'):
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_SCRIPT_DIR))
+else:
+    PROJECT_ROOT = os.path.dirname(CURRENT_SCRIPT_DIR)
+
 sys.path.append(PROJECT_ROOT)
 
 try:
@@ -235,17 +240,12 @@ class OCRReaderPipeline:
         mask_status_log = "⚠️ Neural Network Weights Uninitialized or Not Found"
 
         if self.text_recognizer is not None:
-            # 🔍 VERIFICATION LOGGING ENGINE: Determine if the neural network layer triggered an active mask
             if self.detector is not None and np.sum(mask) > 1000:
                 resized_mask = cv2.resize(mask, (w, h)).astype(np.uint8)
                 mask_status_log = f"🟢 U-Net Target Mask Active! Found {np.sum(mask > 0)} active tensor segmentation pixels."
-                print(f"[PIPELINE LOG] {mask_status_log}")
             else:
-                # Fallback Morphology Layer triggers if the U-Net mask evaluates completely blank
                 mask_status_log = "🔴 U-Net Mask Empty (Solid Black Canvas) -> Swapped to Adaptive Morphology Processing Engine"
-                print(f"[PIPELINE LOG] {mask_status_log}")
 
-                # Check background intensity to handle clean text sheets vs dark mask fields natively
                 if np.mean(raw_img) > 127:
                     _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 else:
@@ -254,7 +254,6 @@ class OCRReaderPipeline:
                 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
                 resized_mask = cv2.dilate(thresh, kernel, iterations=1)
 
-            # Trace bounding boundaries of text components
             contours, _ = cv2.findContours(resized_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             valid_contours = []
@@ -266,7 +265,6 @@ class OCRReaderPipeline:
                     if wc > 25 and hc > 8 and hc < (h // 6):
                         valid_contours.append(ctr)
 
-            # Create clean visual contour preview tracking layout for the sidebar UI tab
             preview_canvas = np.zeros((h, w), dtype=np.uint8)
             if len(valid_contours) > 0:
                 valid_contours = sorted(valid_contours, key=lambda ctr: cv2.boundingRect(ctr)[1])
@@ -282,7 +280,6 @@ class OCRReaderPipeline:
 
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
-            # Crop text blocks sequentially and process via CRNN text engine
             for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
 
@@ -317,6 +314,7 @@ class OCRReaderPipeline:
         # --- STEP 3: Compute Linear Vector Routing (LightGBM Decision Matrix) ---
         category_label = "Prescription/Symptom"
         confidence_score = 100.0
+        pred_label = 0  # 🎯 FIXED: Establish baseline initialization value to prevent unbound local reference crashes
 
         if self.router and self.vectorizer and ocr_text_output != "No readable text extracted.":
             vec_text = self.vectorizer.transform([ocr_text_output])
@@ -375,7 +373,7 @@ class MedicalAI:
 
     def execute_verification_cycle(self):
         try:
-            st.info("🧠 Recalculating machine learning weights...")
+            st.info("⚠️ Recalculating machine learning weights...")
             subprocess.run([sys.executable, PREPROCESS_SCRIPT], check=True)
             subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
             self.load_resources()
@@ -490,7 +488,6 @@ def main():
                 if 'ocr_pipeline' in st.session_state or st.session_state.last_processed_file_hash is not None:
                     tab_metrics, tab_mask = st.sidebar.tabs(["Analysis", "U-Net Mask"])
                     with tab_metrics:
-                        # 📁 absolute Path tracking diagnostics indicators
                         detector_loaded = st.session_state.ocr_pipeline.detector is not None
                         st.sidebar.caption(f"Expected Path: `{DETECTOR_WEIGHTS}`")
                         st.sidebar.caption(
@@ -502,7 +499,6 @@ def main():
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
-                        # 📝 NATIVE FRONT-END VISUAL LAYER LOGGING OUTPUT PANEL
                         if "🟢" in st.session_state.mask_execution_log:
                             st.success(st.session_state.mask_execution_log)
                         else:
