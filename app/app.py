@@ -193,7 +193,7 @@ class OCRReaderPipeline:
         if os.path.exists(CRNN_WEIGHTS):
             self.text_recognizer.load_state_dict(torch.load(CRNN_WEIGHTS, map_location=self.device))
 
-        # 🎯 FIXED: Enable eval tracking mode, but keep BatchNorm metrics dynamic
+        # Enable eval tracking mode, but keep BatchNorm layer metrics dynamic to clear loops
         self.text_recognizer.eval()
         for module in self.text_recognizer.modules():
             if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
@@ -250,7 +250,7 @@ class OCRReaderPipeline:
                 raw_mask_np = mask_output.squeeze().detach().cpu().numpy()
                 max_activation = np.max(raw_mask_np)
 
-                # 🎯 FIXED: Responsive dynamic threshold prevents mask flatlining
+                # Responsive dynamic threshold layer prevents solid black canvas dropouts
                 if max_activation > 0.1:
                     dynamic_threshold = 0.3 if max_activation > 0.5 else (max_activation * 0.5)
                     mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
@@ -301,6 +301,18 @@ class OCRReaderPipeline:
 
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
+            # ====================================================================
+            # STEP 2 CALIBRATION CONTROLS (CRNN WEIGHT ALIGNMENT MATRIX)
+            # ====================================================================
+            # 🛠️ CALIBRATION 1: Set to True if your CRNN expects dark text on white sheets.
+            # Set to False if your CRNN expects bright white characters on a dark backdrop.
+            EXPECTS_DARK_TEXT = False
+
+            # 🛠️ CALIBRATION 2: Set to True if your model weights require zero-centered [-1.0, 1.0] inputs.
+            # Set to False if your model expects a raw [0.0, 1.0] value distribution scale.
+            USE_ZERO_CENTERED_SCALE = False
+            # ====================================================================
+
             for ctr in valid_contours:
                 x, y, cw, ch = cv2.boundingRect(ctr)
 
@@ -315,18 +327,27 @@ class OCRReaderPipeline:
                     continue
 
                 target_w, target_h = 256, 64
-                crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255
+
+                if EXPECTS_DARK_TEXT:
+                    crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255
+                else:
+                    crnn_input = np.zeros((target_h, target_w), dtype=np.uint8)
 
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
                 nw = int(line_crop.shape[1] * scale)
                 nh = int(line_crop.shape[0] * scale)
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
-                resized_crop = cv2.bitwise_not(resized_crop)
+
+                if EXPECTS_DARK_TEXT:
+                    resized_crop = cv2.bitwise_not(resized_crop)
+
                 crnn_input[0:nh, 0:nw] = resized_crop
 
                 crnn_input = crnn_input.astype(np.float32) / 255.0
-                crnn_input = (crnn_input - 0.5) / 0.5
+
+                if USE_ZERO_CENTERED_SCALE:
+                    crnn_input = (crnn_input - 0.5) / 0.5
 
                 crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
                 crnn_tensor = crnn_tensor.unsqueeze(0).unsqueeze(0)
