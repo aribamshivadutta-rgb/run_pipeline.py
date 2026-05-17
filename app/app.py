@@ -296,9 +296,6 @@ class OCRReaderPipeline:
 
                 # Enforce safe zero-padding letterboxing
                 target_w, target_h = 256, 64
-
-                # 🧪 COLOR-SPACE SWITCH MATRIX: Align background layout with your training baseline
-                # If your CRNN expects light characters on a dark canvas, change to: np.zeros(...)
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255
 
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
@@ -306,17 +303,10 @@ class OCRReaderPipeline:
                 nh = int(line_crop.shape[0] * scale)
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
-
-                # If your CRNN expects dark text but your line_crop is inverted, or vice versa, invert here:
-                # resized_crop = cv2.bitwise_not(resized_crop)
-
                 crnn_input[0:nh, 0:nw] = resized_crop
 
                 # Normalize float values explicitly to standard range [0.0, 1.0]
-                crnn_input = np.array(crnn_input, dtype=np.float32) / 255.0
-
-                # 🧪 DYNAMIC RANGE SWITCH MATRIX: Zero-Center the distribution array if required
-                # Uncomment the line below if your weights were trained on a [-1.0, 1.0] distribution
+                crnn_input = crnn_input.astype(np.float32) / 255.0
                 crnn_input = (crnn_input - 0.5) / 0.5
 
                 # Convert matrix cleanly to 4D Torch Tensor: [Batch, Channel, Height, Width]
@@ -527,8 +517,7 @@ def main():
 
                         st.sidebar.success("🎯 Analysis Complete!")
 
-                        st.session_state.extracted_file_text = Antiquoted if results["ocr_text"] else results[
-                            "ocr_text"]
+                        # 🎯 FIXED: Removed the undefined 'Antiquoted' fallback logic line completely
                         st.session_state.extracted_file_text = results["ocr_text"]
                         st.session_state.cached_mask_preview = results["mask_preview"].copy()
                         st.session_state.mask_execution_log = results["mask_status"]
