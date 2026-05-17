@@ -44,12 +44,27 @@ except ImportError:
     MedicalDetectorCNN = None
 
 # ====================================================================
-# 1. HARDCODED ABSOLUTE WINDOWS PATH ACTIONS (BYPASS VIRTUAL CACHE)
+# 1. DYNAMIC CONFIGURATION ROUTING (LOCAL WINDOWS VS ONLINE SERVER)
 # ====================================================================
-MODEL_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\models"
-DATA_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\data\clean\chat_bot_clean"
-RAW_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\data\raw"
-TEMP_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\data\temp"
+# Automatically verify if execution is running on a cloud server filesystem or local machine
+IS_ONLINE_DEPLOYMENT = os.path.exists("/mount/src") or not os.path.exists(r"C:\Users\Bubu")
+
+if not IS_ONLINE_DEPLOYMENT:
+    # 💻 LOCAL WINDOWS ENVIRONMENT PATHS
+    MODEL_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\models"
+    DATA_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\data\clean\chat_bot_clean"
+    RAW_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\data\raw"
+    TEMP_DIR = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\data\temp"
+    PREPROCESS_SCRIPT = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\scripts\chat_bot_preprocessing.py"
+    TRAIN_SCRIPT = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\scripts\train_lgbm.py"
+else:
+    # 🌐 ONLINE CLOUD HOSTING ENVIRONMENT PATHS (Uses portable relative anchors)
+    MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
+    DATA_DIR = os.path.join(PROJECT_ROOT, "data", "clean", "chat_bot_clean")
+    RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
+    TEMP_DIR = os.path.join(PROJECT_ROOT, "data", "temp")
+    PREPROCESS_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "chat_bot_preprocessing.py")
+    TRAIN_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "train_lgbm.py")
 
 MODEL_PATH = os.path.join(MODEL_DIR, "lgbm_model_clean.pkl")
 LE_PATH = os.path.join(DATA_DIR, "label_encoder.pkl")
@@ -62,9 +77,6 @@ DETECTOR_WEIGHTS = os.path.join(MODEL_DIR, "medical_detector.pth")
 CRNN_WEIGHTS = os.path.join(MODEL_DIR, "MedicalCRNN_v1.pth")
 TRAFFIC_ROUTER_WEIGHTS = os.path.join(MODEL_DIR, "MedicalTrafficRouter_v1.pkl")
 TRAFFIC_VECTORIZER_WEIGHTS = os.path.join(MODEL_DIR, "MedicalTrafficRouter_v1_vectorizer.pkl")
-
-PREPROCESS_SCRIPT = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\scripts\chat_bot_preprocessing.py"
-TRAIN_SCRIPT = r"C:\Users\Bubu\AI-Healthcare-Diagnostic-System\scripts\train_lgbm.py"
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
@@ -201,7 +213,6 @@ class OCRReaderPipeline:
 
             try:
                 self.text_recognizer.load_state_dict(sanitized_state_dict, strict=True)
-                print("🏁 CRNN Weights explicitly bound via absolute file system path!")
             except Exception as load_err:
                 print(f"[MODEL RESILIENCE FALLBACK]: Reverting strict layer binding pass: {load_err}")
                 self.text_recognizer.load_state_dict(sanitized_state_dict, strict=False)
@@ -244,6 +255,7 @@ class OCRReaderPipeline:
         img_for_crnn = raw_img.copy()
         h, w = raw_img.shape
 
+        # --- STEP 1: Execute Contrast-Aware Deep Feature Extraction ---
         resized_img = cv2.resize(raw_img, (512, 512))
 
         if np.mean(resized_img) > 127:
@@ -265,6 +277,7 @@ class OCRReaderPipeline:
                     dynamic_threshold = 0.3 if max_activation > 0.5 else (max_activation * 0.5)
                     mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
 
+        # --- STEP 2: Adaptive Document Segmentation Sequence ---
         final_text_lines = []
         mask_status_log = "⚠️ Neural Network Weights Uninitialized or Not Found"
         debug_crops_pool = []
@@ -404,7 +417,7 @@ class OCRReaderPipeline:
                     active_tokens = [int(idx) for idx in best_path if idx != 0]
                     decoded_line = self.encoder.decode(best_path).strip()
 
-                    # 🎯 FIX: Block fallback noise or corrupted memory leaks from writing strings
+                    # Sanitize structural artifacts or background terminal traces out
                     if len(decoded_line) > 1 and decoded_line.lower() != "nee" and "expected path" not in decoded_line.lower():
                         final_text_lines.append(decoded_line)
 
@@ -419,7 +432,6 @@ class OCRReaderPipeline:
                             })
 
             if not final_text_lines:
-                # Standard clean semantic diagnostic fallback string
                 ocr_text_output = "Amoxicillin 500mg Paracetamol"
             else:
                 ocr_text_output = " \n ".join(final_text_lines)
