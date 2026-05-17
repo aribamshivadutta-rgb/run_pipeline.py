@@ -18,25 +18,31 @@ from datetime import datetime
 from st_supabase_connection import SupabaseConnection
 from pdf2image import convert_from_bytes
 
-# Avoid relative import breakages by dynamically adding scripts path to system environment
-CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-if CURRENT_SCRIPT_DIR.endswith('.py'):
-    PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_SCRIPT_DIR))
-else:
-    PROJECT_ROOT = os.path.dirname(CURRENT_SCRIPT_DIR)
-
-sys.path.append(PROJECT_ROOT)
-
-try:
-    # Explicitly importing your structural U-Net model from your scripts folder
-    from scripts.medical_detector_cnn import MedicalDetectorCNN
-except ImportError:
-    # Fallback placeholder if layout shifts during runtime context
-    MedicalDetectorCNN = None
-
 # ====================================================================
 # 1. PORTABLE CORE FILE-SYSTEM PATH ENGINES
 # ====================================================================
+# Force structural directory validation regardless of script initialization parameters
+STARTING_PATH = os.path.abspath(os.path.dirname(__file__))
+
+# Cleanly extract any running file parameters if the cloud server wraps the script name
+if STARTING_PATH.endswith('.py') or "run_pipeline.py" in STARTING_PATH:
+    # Safely drop down to the absolute parent path tree directory anchor
+    PROJECT_ROOT = os.path.abspath(os.path.join(STARTING_PATH, os.pardir))
+else:
+    PROJECT_ROOT = STARTING_PATH
+
+# 🎯 CRUCIAL SANITIZATION LOOKUP: Strip out stray script strings if appended by container environments
+if "run_pipeline.py" in PROJECT_ROOT:
+    PROJECT_ROOT = PROJECT_ROOT.split("run_pipeline.py")[0].rstrip(os.sep)
+elif "app.py" in PROJECT_ROOT:
+    PROJECT_ROOT = PROJECT_ROOT.split("app.py")[0].rstrip(os.sep)
+
+# Final structural fallback step: If the root string pointer ends inside an 'app' subfolder, step up to parent root
+if os.path.basename(PROJECT_ROOT) == "app":
+    PROJECT_ROOT = os.path.dirname(PROJECT_ROOT)
+
+sys.path.append(PROJECT_ROOT)
+
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data", "clean", "chat_bot_clean")
 RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw")
@@ -68,6 +74,12 @@ DISEASE_ALIASES = {
     "flu": "influenza", "sugar": "diabetes", "bp": "hypertension",
     "heart attack": "myocardial infarction", "brain stroke": "cerebrovascular accident"
 }
+
+try:
+    # Explicitly importing your structural U-Net model from your scripts folder
+    from scripts.medical_detector_cnn import MedicalDetectorCNN
+except ImportError:
+    MedicalDetectorCNN = None
 
 # ====================================================================
 # 2. CLOUD DATABASE MANAGEMENT (SUPABASE INTEGRATION)
@@ -118,7 +130,7 @@ def verify_user_cloud(v_id, input_key):
 
 
 # ====================================================================
-# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ADAPTIVE SEGMENTATION)
+# 3. DETECTOR & RECOGNITION DEEP LEARNING PIPELINE (ROBUST INTEGRATION)
 # ====================================================================
 class MedicalLabelEncoder:
     def __init__(self):
@@ -228,10 +240,10 @@ class OCRReaderPipeline:
         mask = np.zeros((512, 512), dtype=np.uint8)
         if self.detector is not None:
             with torch.no_grad():
-                mask_output = self.detector(img_tensor)
-                raw_mask_np = mask_output.squeeze().cpu().numpy()
+                mask_output = torch.sigmoid(self.detector(img_tensor))
+                raw_mask_np = mask_output.squeeze().detach().cpu().numpy()
                 max_activation = np.max(raw_mask_np)
-                dynamic_threshold = 0.5 if max_activation > 0.5 else (max_activation * 0.8)
+                dynamic_threshold = 0.5 if max_activation > 0.5 else (max_activation * 0.7)
                 mask = (raw_mask_np > dynamic_threshold).astype(np.uint8) * 255
 
         # --- STEP 2: Adaptive Document Segmentation Sequence (CRNN Layout Alignment) ---
@@ -245,13 +257,10 @@ class OCRReaderPipeline:
             else:
                 mask_status_log = "🔴 U-Net Mask Empty (Solid Black Canvas) -> Swapped to Adaptive Morphology Processing Engine"
 
-                # Dynamic Style Kernel Mapping: Check document background intensity distributions
                 if np.mean(raw_img) > 127:
-                    # Light background handwritten prescription -> Use tight phrase boundary dilation
                     _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 4))
                 else:
-                    # Dark background printed document -> Use macro paragraph structural block layout consolidation
                     _, thresh = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (60, 6))
 
@@ -376,7 +385,7 @@ class MedicalAI:
 
     def execute_verification_cycle(self):
         try:
-            st.info("🧠 Recalculating machine learning weights...")
+            st.info("⚠️ Recalculating machine learning weights...")
             subprocess.run([sys.executable, PREPROCESS_SCRIPT], check=True)
             subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
             self.load_resources()
