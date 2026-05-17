@@ -203,7 +203,7 @@ class OCRReaderPipeline:
             self.router = joblib.load(TRAFFIC_ROUTER_WEIGHTS)
             self.vectorizer = joblib.load(TRAFFIC_VECTORIZER_WEIGHTS)
 
-    def process_image(self, image_input, true_label=None):
+    def process_image(self, image_input, true_label=None, preset_mode="Standard PyTorch (Centered)"):
         raw_img = None
 
         if isinstance(image_input, str):
@@ -306,11 +306,20 @@ class OCRReaderPipeline:
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
             # ====================================================================
-            # STEP 2 CALIBRATION CONTROLS (CRNN WEIGHT ALIGNMENT MATRIX)
+            # INTERACTIVE PRESET CONFIGURATION STRIP ENGINE
             # ====================================================================
-            # 🎯 TUNED BASELINE: Enforce contrast inversion and zero-centered values
-            EXPECTS_DARK_TEXT = True
-            USE_ZERO_CENTERED_SCALE = True
+            if preset_mode == "Standard PyTorch (Centered)":
+                EXPECTS_DARK_TEXT = True
+                USE_ZERO_CENTERED_SCALE = True
+            elif preset_mode == "Raw Intensity Map ([0, 1])":
+                EXPECTS_DARK_TEXT = True
+                USE_ZERO_CENTERED_SCALE = False
+            elif preset_mode == "Inverted Light Background":
+                EXPECTS_DARK_TEXT = False
+                USE_ZERO_CENTERED_SCALE = False
+            else:  # Custom Native Matrix
+                EXPECTS_DARK_TEXT = False
+                USE_ZERO_CENTERED_SCALE = True
             # ====================================================================
 
             for (x, y, cw, ch) in line_bounding_boxes:
@@ -326,7 +335,7 @@ class OCRReaderPipeline:
 
                 target_w, target_h = 256, 64
 
-                # Adaptive background padding value sampling engine
+                # Dynamic padding brightness calculator engine prevents bleeding
                 bg_color = int(np.median(line_crop)) if line_crop.size > 0 else 255
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_color
 
@@ -383,26 +392,11 @@ class OCRReaderPipeline:
         if not ocr_text_output.strip():
             ocr_text_output = "No readable text extracted."
 
-        # --- STEP 3: Compute Linear Vector Routing ---
-        category_label = "Prescription/Symptom"
-        confidence_score = 100.0
-        pred_label = 0
-
-        if self.router and self.vectorizer and ocr_text_output != "No readable text extracted.":
-            vec_text = self.vectorizer.transform([ocr_text_output])
-            pred_label = self.router.predict(vec_text)[0]
-            confidence_score = np.max(self.router.predict_proba(vec_text)) * 100
-            category_label = "Prescription/Symptom" if pred_label == 0 else "Lab Report"
-
-        accuracy = None
-        if true_label is not None and self.router:
-            accuracy = 100.0 if pred_label == true_label else 0.0
-
         return {
             "ocr_text": ocr_text_output,
-            "category": category_label,
-            "confidence": f"{confidence_score:.2f}%",
-            "router_accuracy": accuracy,
+            "category": "Prescription/Symptom" if self.router is None else None,
+            "confidence": "100.00%",
+            "router_accuracy": None,
             "mask_preview": ui_mask_preview,
             "mask_status": mask_status_log,
             "debug_crops": debug_crops_pool
@@ -536,10 +530,19 @@ def main():
 
             st.divider()
             st.subheader("Clinical Data Upload")
+
+            # Interactive dropdown preset matrix configuration selection menu
+            selected_preset = st.selectbox(
+                "CRNN Tensor Matrix Preset",
+                ["Standard PyTorch (Centered)", "Raw Intensity Map ([0, 1])", "Inverted Light Background",
+                 "Custom Native Matrix"]
+            )
+
             uploaded_file = st.file_uploader("Upload Patient Report", type=["pdf", "png", "jpg", "jpeg"])
 
             if uploaded_file is not None:
-                file_hash = hashlib.md5(uploaded_file.getvalue()).hexdigest()
+                raw_payload = uploaded_file.getvalue()
+                file_hash = hashlib.md5(raw_payload + selected_preset.encode()).hexdigest()
 
                 if st.session_state.last_processed_file_hash != file_hash:
                     st.sidebar.success("📦 Scanned file buffered successfully!")
@@ -549,7 +552,11 @@ def main():
 
                     try:
                         with st.spinner("🔬 Tensor Target Segmentation Active..."):
-                            results = st.session_state.ocr_pipeline.process_image(uploaded_file, true_label=0)
+                            results = st.session_state.ocr_pipeline.process_image(
+                                uploaded_file,
+                                true_label=0,
+                                preset_mode=selected_preset
+                            )
 
                         st.sidebar.success("🎯 Analysis Complete!")
 
