@@ -294,8 +294,10 @@ class OCRReaderPipeline:
                 if line_crop.size == 0 or line_crop.shape[0] < 2 or line_crop.shape[1] < 2:
                     continue
 
-                # Enforce safe zero-padding letterboxing
+                # 🛠️ SHAPE TUNING LAYER: Enforce safe zero-padded letterboxing configuration
                 target_w, target_h = 256, 64
+
+                # CHOOSE BACKGROUND STATE: Use 255 for dark text sheets, or change to 0 for light text sheets
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * 255
 
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
@@ -303,11 +305,17 @@ class OCRReaderPipeline:
                 nh = int(line_crop.shape[0] * scale)
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
+
+                # INVERSION TOGGLE: If characters are reading inverse to training parameters, uncomment below:
+                # resized_crop = cv2.bitwise_not(resized_crop)
+
                 crnn_input[0:nh, 0:nw] = resized_crop
 
-                # Normalize float values explicitly to standard range [0.0, 1.0]
+                # 🛠️ VALUE SCALE TUNING LAYER: Convert explicitly to float arrays
                 crnn_input = crnn_input.astype(np.float32) / 255.0
-                crnn_input = (crnn_input - 0.5) / 0.5
+
+                # ZERO-CENTER TOGGLE: If weights expect zero-centered scales [-1.0, 1.0], uncomment below:
+                # crnn_input = (crnn_input - 0.5) / 0.5
 
                 # Convert matrix cleanly to 4D Torch Tensor: [Batch, Channel, Height, Width]
                 crnn_tensor = torch.from_numpy(crnn_input).float().to(self.device)
@@ -517,7 +525,6 @@ def main():
 
                         st.sidebar.success("🎯 Analysis Complete!")
 
-                        # 🎯 FIXED: Removed the undefined 'Antiquoted' fallback logic line completely
                         st.session_state.extracted_file_text = results["ocr_text"]
                         st.session_state.cached_mask_preview = results["mask_preview"].copy()
                         st.session_state.mask_execution_log = results["mask_status"]
