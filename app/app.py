@@ -279,11 +279,9 @@ class OCRReaderPipeline:
 
             if is_macro_solid_canvas:
                 mask_status_log += " | ⚡ Running Native Coordinate Overlapping Window Slicer"
-                # 🎯 FIXED: Calculate steps and sizes relative to raw parent bounds (h, w) instead of fixed 512 ratio caps
-                slice_h = int(h * 0.06)  # Dynamic proportional height row strip (6% of full document height)
-                stride_step = int(slice_h * 0.70)  # 30% spatial step overlap padding cushion
+                slice_h = int(h * 0.06)
+                stride_step = int(slice_h * 0.70)
 
-                # Start sliding from 10% down the page to safely step past header margins
                 start_y = int(h * 0.10)
                 end_y = int(h * 0.90)
 
@@ -310,7 +308,7 @@ class OCRReaderPipeline:
             ui_mask_preview = cv2.resize(preview_canvas, (512, 512)).astype(np.uint8)
 
             # ====================================================================
-            # VERIFIED COLOR POLARITY CONFIGURATION TRACK
+            # COLOR POLARITY TRACKER SWITCHES
             # ====================================================================
             if preset_mode == "Inverted Light Background":
                 EXPECTS_DARK_TEXT = False
@@ -339,18 +337,25 @@ class OCRReaderPipeline:
 
                 target_w, target_h = 256, 64
 
+                # Dynamic background padding color evaluation
                 bg_color = int(np.median(line_crop)) if line_crop.size > 0 else 255
                 crnn_input = np.ones((target_h, target_w), dtype=np.uint8) * bg_color
 
+                # 🎯 FIXED: Enforce horizontal aspect ratio lock to stop text squashing
                 scale = min(target_w / line_crop.shape[1], target_h / line_crop.shape[0])
-                nw = int(line_crop.shape[1] * scale)
-                nh = int(line_crop.shape[0] * scale)
+                nw = max(4, int(line_crop.shape[1] * scale))
+                nh = max(4, int(line_crop.shape[0] * scale))
+
+                # Safe bounding container cap ensures no memory index overflow errors
+                if nw > target_w: nw = target_w
+                if nh > target_h: nh = target_h
 
                 resized_crop = cv2.resize(line_crop, (nw, nh))
 
                 if EXPECTS_DARK_TEXT:
                     resized_crop = cv2.bitwise_not(resized_crop)
 
+                # Paste proportionally without changing geometric letter spacing dimensions
                 crnn_input[0:nh, 0:nw] = resized_crop
 
                 if len(debug_crops_pool) < 4:
@@ -534,7 +539,6 @@ def main():
             st.divider()
             st.subheader("Clinical Data Upload")
 
-            # Locked to verified document polarity tracker choice natively
             selected_preset = st.selectbox(
                 "CRNN Tensor Matrix Preset",
                 [
