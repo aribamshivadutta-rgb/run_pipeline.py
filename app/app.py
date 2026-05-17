@@ -1,8 +1,3 @@
-import warnings
-# 🤫 CRUCIAL: Suppress deprecation prints at the compiler level before importing Streamlit
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 import streamlit as st
 import os
 import sys
@@ -321,7 +316,8 @@ class MedicalAI:
                 input_dict[m[0]] = 1
                 matched.append(m[0])
             else:
-                for k in self.known_symptoms}
+                # 🌟 FIXED: Changed typo from curly brace '}' to colon ':' to restore loop functionality
+                for k in self.known_symptoms:
                     if t in k.replace("_", " "):
                         input_dict[k] = 1
                         matched.append(k)
@@ -411,7 +407,7 @@ def main():
                         st.sidebar.error(f"Inference Failure: {eval_err}")
                         st.session_state.last_processed_file_hash = file_hash
 
-                if 'ocr_pipeline' in st.session_state:
+                if 'ocr_pipeline' in st.session_state or st.session_state.last_processed_file_hash is not None:
                     tab_metrics, tab_mask = st.sidebar.tabs(["Analysis", "U-Net Mask"])
                     with tab_metrics:
                         st.metric("Inferred Category", "Prescription/Symptom")
@@ -419,7 +415,7 @@ def main():
                         st.text_area("Extracted Context Matrix", st.session_state.get("extracted_file_text", ""))
 
                     with tab_mask:
-                        # 🎯 FIX: Render the dynamically cached live array instead of an empty black block
+                        # 🌟 FIXED: Render the dynamically cached live array instead of an empty black block
                         if st.session_state.cached_mask_preview is not None:
                             st.image(st.session_state.cached_mask_preview, caption="Target U-Net Segmented Regions", use_container_width=True)
                         else:
