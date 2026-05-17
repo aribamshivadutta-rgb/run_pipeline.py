@@ -272,7 +272,6 @@ class OCRReaderPipeline:
 
                 resized_mask = cv2.dilate(thresh, kernel, iterations=1)
 
-            # 🎯 FIXED: If mask is a solid block, bypass contour bounding and use a dynamic line slicer
             line_bounding_boxes = []
 
             if is_macro_solid_canvas:
@@ -290,13 +289,11 @@ class OCRReaderPipeline:
                             if wc > 8 and hc > 3:
                                 line_bounding_boxes.append((xc, yc, wc, hc))
 
-            # Fallback if no lines generated
             if not line_bounding_boxes:
                 chunk_h = h // 12
                 for i in range(12):
                     line_bounding_boxes.append((0, i * chunk_h, w, chunk_h))
 
-            # Render Preview Canvas
             preview_canvas = np.zeros((h, w), dtype=np.uint8)
             for (bx, by, bw, bh) in line_bounding_boxes:
                 cv2.rectangle(preview_canvas, (bx, by), (bx + bw, by + bh), (255), thickness=-1)
@@ -305,6 +302,7 @@ class OCRReaderPipeline:
             # ====================================================================
             # STEP 2 CALIBRATION CONTROLS (CRNN WEIGHT ALIGNMENT MATRIX)
             # ====================================================================
+            # 🎯 FIXED: Set to False to stop washing out high-contrast text strings
             EXPECTS_DARK_TEXT = False
             USE_ZERO_CENTERED_SCALE = False
             # ====================================================================
