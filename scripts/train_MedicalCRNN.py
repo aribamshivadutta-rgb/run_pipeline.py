@@ -63,7 +63,7 @@ class MedicalDataset(Dataset):
         if raw_img is None:
             return torch.zeros((1, 64, 256)), torch.LongTensor([0]), torch.LongTensor([1])
 
-        # Apply robust binarization
+        # Apply robust light-background binarization profile (Matches App execution)
         if np.mean(raw_img) > 127:
             _, processed_img = cv2.threshold(raw_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         else:
@@ -88,7 +88,9 @@ class MedicalDataset(Dataset):
         start_y = max(0, (target_h - nh) // 2)
         padded_canvas[start_y:start_y + nh, start_x:start_x + nw] = resized_crop
 
+        # High-Contrast Document [Zero-Centered Scale Alignment: -1.0 to 1.0]
         tensor_img = padded_canvas.astype(np.float32) / 255.0
+        tensor_img = (tensor_img - 0.5) / 0.5
         tensor_img = torch.from_numpy(tensor_img).unsqueeze(0).float()
 
         label_encoded = self.encoder.encode(label_text)
@@ -99,7 +101,7 @@ class MedicalDataset(Dataset):
 
 
 # ====================================================================
-# 3. ARCHITECTURE BLOCK
+# 3. ARCHITECTURE BLOCK (FULLY SYNCHRONIZED WITH PRODUCTION GRAPH)
 # ====================================================================
 class MedicalCRNN(nn.Module):
     def __init__(self, vocab_size):
@@ -110,18 +112,22 @@ class MedicalCRNN(nn.Module):
             nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(),
             nn.Conv2d(256, 256, 3, padding=1), nn.ReLU(), nn.MaxPool2d((2, 1))
         )
-        self.rnn = nn.LSTM(input_size=2048, hidden_size=256, num_layers=2, bidirectional=True, batch_first=True)
-        self.fc = nn.Linear(512, vocab_size)
+        self.hidden_size = 256
+        self.num_layers = 2
+        self.rnn = nn.LSTM(input_size=2048, hidden_size=self.hidden_size, num_layers=self.num_layers,
+                           bidirectional=True, batch_first=True)
+        self.fc = nn.Linear(self.hidden_size * 2, vocab_size)
 
-    def forward(self, img_tensor):
+    def forward(self, img_tensor, hx=None):
         features = self.cnn(img_tensor)
         b, c, h, w = features.size()
 
         features = features.view(b, c * h, w)
         features = features.permute(0, 2, 1)
 
-        rnn_out, _ = self.rnn(features)
+        rnn_out, _ = self.rnn(features, hx)
         logits = self.fc(rnn_out)
+
         return logits.log_softmax(2)
 
 
@@ -159,12 +165,14 @@ def run_training():
     model = MedicalCRNN(encoder.vocab_size).to(device)
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
 
-    # Standard base learning rate initialization
     optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
 
-    # 🎯 STEP COUPLING PATTERN: Cosine Annealing scheduler targets localized global minima precisely
-    TOTAL_EPOCHS = 60
+    # 🎯 ALPHABET MASTERY: Scale epochs to 350 to allow full character vocabulary convergence
+    TOTAL_EPOCHS = 350
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=TOTAL_EPOCHS, eta_min=1e-6)
+
+    # Initialize tracking threshold for Accuracy Guard
+    best_loss = float('inf')
 
     print(f"🚀 Initializing Optimized Training Engine on: {device}")
     print(f"📊 Loaded {len(train_ds)} valid prescription samples for optimization.")
@@ -178,7 +186,12 @@ def run_training():
             imgs, labels = imgs.to(device), labels.to(device)
             optimizer.zero_grad()
 
-            preds = model(imgs).permute(1, 0, 2)
+            # Initialize zeroed hidden states to match app runtime execution environment exactly
+            num_directions = 2
+            h0 = torch.zeros(model.num_layers * num_directions, imgs.size(0), model.hidden_size).to(device)
+            c0 = torch.zeros(model.num_layers * num_directions, imgs.size(0), model.hidden_size).to(device)
+
+            preds = model(imgs, (h0, c0)).permute(1, 0, 2)
             input_lens = torch.full((imgs.size(0),), preds.size(0), dtype=torch.long)
 
             loss = criterion(preds, labels, input_lens, lengths)
@@ -190,7 +203,6 @@ def run_training():
             epoch_loss += loss.item()
             progress_bar.set_postfix(loss=loss.item())
 
-        # Step the learning decay function tracking algorithm
         scheduler.step()
 
         avg_epoch_loss = epoch_loss / len(train_loader)
@@ -203,7 +215,11 @@ def run_training():
             test_img, test_lbl, _ = train_ds[0]
             if torch.sum(test_img) > 0:
                 sample_tensor = test_img.unsqueeze(0).to(device)
-                sample_preds = model(sample_tensor)
+
+                h0_t = torch.zeros(model.num_layers * num_directions, 1, model.hidden_size).to(device)
+                c0_t = torch.zeros(model.num_layers * num_directions, 1, model.hidden_size).to(device)
+
+                sample_preds = model(sample_tensor, (h0_t, c0_t))
                 best_path = torch.argmax(sample_preds, dim=2).squeeze(0).cpu().numpy()
                 active_tokens = [tok for tok in best_path if tok != 0]
                 decoded_sample = encoder.decode(best_path)
@@ -213,8 +229,40 @@ def run_training():
                 print(f"      ├─ Active Predicted Path Token Indices Vector: {active_tokens}")
                 print(f"      └── Model Decoded Text Prediction Output:  ➡️ '{decoded_sample}'\n")
 
-        # Save model state weights per tracking milestone checkpoints safely
-        torch.save(model.state_dict(), MODEL_SAVE_PATH)
+        # ====================================================================
+        # 🎯 BULLETPROOF ACCURACY GUARD WITH ATOMIC SWAP AND SLOT RE-ROUTING
+        # ====================================================================
+        if avg_epoch_loss < best_loss:
+            best_loss = avg_epoch_loss
+
+            # Step A: Save to an isolated temporary file to avoid active operating system thread locks
+            temp_save_path = MODEL_SAVE_PATH + f".epoch_{epoch + 1}.tmp"
+
+            try:
+                torch.save(model.state_dict(), temp_save_path)
+
+                # Step B: Atomically clear out the older master path if it exists
+                if os.path.exists(MODEL_SAVE_PATH):
+                    try:
+                        os.remove(MODEL_SAVE_PATH)
+                    except OSError:
+                        # If a background thread has a stubborn lock on the file, re-route to an epoch block
+                        MODEL_SAVE_PATH = os.path.join(PROJECT_ROOT, 'models', f'MedicalCRNN_epoch_{epoch + 1}.pth')
+
+                # Step C: Swap the fresh file cleanly into place
+                os.rename(temp_save_path, MODEL_SAVE_PATH)
+                print(
+                    f"🌟 New Best Loss achieved ({best_loss:.4f})! Parameters matrix exported safely to: {MODEL_SAVE_PATH}")
+
+            except Exception as io_err:
+                print(f"⚠️ Windows I/O Lock intercepted during file commit pass: {io_err}")
+                print("🔄 [Resilience Fallback]: Shifting weights to a dedicated unique milestone slot...")
+                MODEL_SAVE_PATH = os.path.join(PROJECT_ROOT, 'models', f'MedicalCRNN_epoch_{epoch + 1}.pth')
+                torch.save(model.state_dict(), MODEL_SAVE_PATH)
+                print(f"✅ Recovery Successful! Milestone matrix safely locked into path: {MODEL_SAVE_PATH}")
+        else:
+            print(
+                f"ℹ️ Epoch loss ({avg_epoch_loss:.4f}) did not beat historical minimum ({best_loss:.4f}). Skipping binary file write.")
 
     print("🏁 Optimized model training complete! Fine-tuned weights exported successfully.")
 
